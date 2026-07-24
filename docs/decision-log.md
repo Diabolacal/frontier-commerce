@@ -6,6 +6,44 @@ development period (2026-07-19 → 2026-07-24) that a builder needs to
 understand the system. The authors' deployment-operations history lives in
 their private operations repo.
 
+## 2026-07-24 - Distribution model: npm + tagged releases, deliberately no MVR
+
+- **Goal:** act on Builder Showcase feedback (Sketrov): consumers should
+  depend on released, versioned packages rather than embedding this repo
+  as a git submodule.
+- **What changed:** `@frontier-commerce/sdk` is now publishable
+  (npm-ready metadata, `files` whitelist, per-package README/LICENCE);
+  `.github/workflows/release.yml` publishes it on GitHub releases via
+  npm **trusted publishing** (OIDC - tokenless, automatic provenance);
+  one release train (git tag `vX.Y.Z` = all workspace versions = SDK npm
+  version) with `CHANGELOG.md`; `docs/distribution.md` documents the
+  model; the integration guide now recommends npm first (submodules
+  demoted to a source-hacking option); `deploy-testnet.ts` stamps
+  `evidence.source` (git remote + `git describe`) into descriptors so
+  every sovereign deployment records the released source it runs.
+- **MVR decision (the nuance):** MVR resolves a name to a *registrant's
+  published on-chain package* - its consumers build against that
+  deployment and (for unpinned PTB callers) follow the registrant's
+  upgrade governance. That fits shared-canonical-deployment protocols
+  and is the opposite of this project's sovereign deploy-your-own
+  default, so **no MVR name or PackageInfo is registered**. Move source
+  distribution = GitHub release tags (`sui client verify-source` against
+  the tag). Adopters may register *their own* instance under *their own*
+  namespace; MVR naming for the authors' instance is revisited at
+  mainnet promotion (checklist step 9). Registration would also require
+  a SuiNS namespace and mainnet transactions - out of bounds pre-mainnet.
+- **Publish surface:** SDK only. Gas station, indexer, obs-collector and
+  demo-consumer remain private (operated infrastructure, not libraries);
+  the indexer is the most plausible future candidate.
+- **Risk:** low - no chain state touched; npm publication itself is an
+  operator action (first publish cannot use trusted publishing).
+- **Validation:** full gates (Move tests, `pnpm -r build/typecheck/test`),
+  `npm pack` inspection, tarball install + import proof in a throwaway
+  external consumer.
+- **Follow-ups:** operator creates the npm org, first-publishes
+  `@frontier-commerce/sdk@0.1.0` from the tag, registers the trusted
+  publisher; internal ops repo pins the submodule to release tags.
+
 ## 2026-07-24 - Initial public release (clean import)
 
 - **What:** the repository went public as a fresh-history import of the

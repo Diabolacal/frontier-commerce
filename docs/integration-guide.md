@@ -17,23 +17,23 @@ there or in the testnet smoke script.
   (packageId, originalPackageId, registryId, coin types). Load it at
   runtime; never hard-code IDs in app code.
 - Your own `Merchant` object + caps (one-time setup, below).
-- `@frontier-commerce/sdk` (not published to npm; `"private": true` only
-  blocks registry publishing - the consumption paths below all work).
+- The SDK:
 
-**Consuming the SDK from an app outside this repo** - proven options, in
-order of preference:
+```bash
+npm install @frontier-commerce/sdk        # pnpm add / yarn add work too
+```
 
-1. **Git submodule + workspace** (what the authors do): add this repo as a
-   submodule of your app repo and include
-   `<submodule>/packages/sdk` (and `packages/indexer` if you use it) in
-   your `pnpm-workspace.yaml`; depend on `"@frontier-commerce/sdk":
-   "workspace:*"`. Pins an exact upstream commit; updates are deliberate.
-2. **File dependency on a built checkout:** clone this repo next to your
-   app, `pnpm --filter @frontier-commerce/sdk build`, then depend on
-   `"@frontier-commerce/sdk": "file:../frontier-commerce/packages/sdk"`.
-3. **Publish to your own scope:** fork, rename the package into your npm
-   scope, remove `"private": true` in your fork, publish. Apache-2.0
-   permits this; please keep the licence/NOTICE intact.
+Pin the **exact** version matching the release tag you deployed from
+(`"@frontier-commerce/sdk": "0.1.0"`, no `^`, while pre-1.0) and let your
+lockfile record the integrity hash. SDK `X.Y.*` is built for Move source
+`vX.Y.*`; adopt new releases deliberately
+([docs/distribution.md](distribution.md)).
+
+Source-level alternatives still work when you're hacking on the platform
+itself rather than consuming it: clone/submodule the repo at a tag and use
+a workspace or `file:` dependency, or fork and publish under your own npm
+scope (Apache-2.0 permits it; keep the licence/NOTICE intact). None of
+these is needed just to integrate an app.
 
 ## 1. One-time merchant setup (owner, from a trusted machine)
 

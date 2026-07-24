@@ -1,0 +1,70 @@
+# Publishes @frontier-commerce/sdk to npm when a GitHub release is published.
+#
+# Auth model: npm Trusted Publishing (OIDC) - no tokens, no secrets. The
+# workflow file name + repo are registered as the trusted publisher on
+# npmjs.com; provenance attestations are generated automatically.
+# One-time setup (operator): the very first version of a new package cannot
+# be trust-published - publish it once manually (`npm publish --access public`
+# from packages/sdk on the tagged commit), then add this workflow as the
+# trusted publisher in the package's npm settings.
+#
+# Guard rails:
+# - the git tag (vX.Y.Z) must match packages/sdk/package.json version
+# - full TS build/typecheck/test gates run before publishing
+# - if the version already exists on the registry, the publish is skipped
+#   (idempotent re-runs; also makes the first, manually-published release
+#   green instead of red)
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for npm trusted publishing / provenance
+
+jobs:
+  publish-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # No pnpm version here: it comes from "packageManager" in package.json
+        # (specifying one that differs hard-fails the action).
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing requires npm >= 11.5.1; runner images may lag.
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest && npm --version
+
+      - name: Verify tag matches SDK package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./packages/sdk/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag v$TAG does not match packages/sdk version $PKG" >&2
+            exit 1
+          fi
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build, typecheck, test (all workspaces)
+        run: pnpm -r build && pnpm -r typecheck && pnpm -r test
+
+      - name: Publish @frontier-commerce/sdk (skip if version already on npm)
+        working-directory: packages/sdk
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@frontier-commerce/sdk@$VERSION" version >/dev/null 2>&1; then
+            echo "@frontier-commerce/sdk@$VERSION already published - skipping."
+          else
+            npm publish
+          fi

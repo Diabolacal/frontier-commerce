@@ -28,6 +28,7 @@
  *   TESTNET_GRPC_URL   gRPC endpoint (default: fullnode.testnet.sui.io:443)
  */
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -68,6 +69,30 @@ interface DeployConfig {
 
 function log(step: string): void {
   console.log(`\n=== ${step} ===`);
+}
+
+/**
+ * Identify the source this deployment was published from, so the descriptor
+ * records which released version of Frontier Commerce it runs (revision is
+ * e.g. "v0.1.0" on a tagged release, or "v0.1.0-3-gabc1234" between tags).
+ * Best-effort: deploys from a non-git checkout record "unknown".
+ */
+function sourceInfo(): { repository: string; revision: string } {
+  const git = (...args: string[]): string =>
+    execFileSync('git', args, { encoding: 'utf8' }).trim();
+  let repository = 'unknown';
+  let revision = 'unknown';
+  try {
+    revision = git('describe', '--tags', '--always', '--dirty');
+  } catch {
+    /* not a git checkout */
+  }
+  try {
+    repository = git('remote', 'get-url', 'origin');
+  } catch {
+    /* no origin remote */
+  }
+  return { repository, revision };
 }
 
 /** Load the deployer keypair without the secret ever leaving this process. */
@@ -283,6 +308,7 @@ async function main(): Promise<void> {
       },
       ...(mock ? { mockEve: { packageId: mock.packageId, faucetId } } : {}),
       operator: addr,
+      source: sourceInfo(),
       ranAt: new Date().toISOString(),
     },
   };

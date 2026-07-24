@@ -1,9 +1,24 @@
 {
   "name": "@frontier-commerce/sdk",
   "version": "0.1.0",
-  "private": true,
   "license": "Apache-2.0",
-  "description": "TypeScript SDK for the frontier-commerce Move package: config, transaction builders, queries, events, sponsorship client",
+  "description": "TypeScript SDK for the Frontier Commerce Move package: deployment config, transaction builders, queries, events, gas-sponsorship client",
+  "keywords": [
+    "sui",
+    "move",
+    "payments",
+    "commerce",
+    "entitlements",
+    "eve-frontier",
+    "web3"
+  ],
+  "homepage": "https://github.com/Diabolacal/frontier-commerce#readme",
+  "bugs": "https://github.com/Diabolacal/frontier-commerce/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Diabolacal/frontier-commerce.git",
+    "directory": "packages/sdk"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +28,19 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "prepack": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"

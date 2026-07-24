@@ -35,7 +35,7 @@ authors) keep their operational state in their own private repos.
 2. `docs/decision-log.md` (newest-first durable record) and the current
    docs (`docs/architecture.md`, `docs/security-model.md`,
    `docs/key-management.md`, `docs/integration-guide.md`,
-   `docs/deployments.md`).
+   `docs/distribution.md`, `deployments/README.md`).
 3. `README.md` (summary only).
 4. Model memory — lowest. For Sui APIs, verify against the installed
    `@mysten/sui` in `node_modules` and https://docs.sui.io (index:
@@ -80,6 +80,27 @@ authors) keep their operational state in their own private repos.
 - Never remove or weaken failing tests to make CI pass.
 - Delete feature branches after a safe merge unless the operator wants
   them kept.
+
+## Releases & distribution (policy in `docs/distribution.md`)
+
+- One release train: git tag `vX.Y.Z` = every workspace `version` = the
+  npm version of `@frontier-commerce/sdk`. Bump all workspace versions
+  together; update `CHANGELOG.md` in the same change.
+- **Only `@frontier-commerce/sdk` is published to npm.** Gas station,
+  indexer, obs-collector and demo-consumer stay `"private": true` —
+  making another package publishable is an operator decision, not a
+  side effect.
+- Publishing happens exclusively through
+  `.github/workflows/release.yml` (npm trusted publishing / OIDC — no
+  tokens, no secrets). Never `npm publish` from a workstation (the only
+  exception was the documented one-time first publish) and never add npm
+  tokens to CI or the repo.
+- npm versions are immutable: fix a bad release by publishing a patch,
+  never by unpublishing.
+- **MVR (Move Registry): do not register names or PackageInfo objects.**
+  The no-registration posture is a deliberate architecture decision
+  (sovereign deploy-your-own; see `docs/distribution.md`). Revisiting it
+  is an operator-level decision at mainnet promotion.
 
 ## Chain-mutation safety ladder (load-bearing)
 

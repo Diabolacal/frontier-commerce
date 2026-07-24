@@ -159,3 +159,7 @@ balance and the rate/daily caps, not key secrecy heroics.
 8. Run a real-value canary: one paid product at trivial price; full
    pay->entitle->refund->sweep cycle verified on mainnet before any consumer
    integrates.
+9. Optionally decide MVR naming for *this instance only* (an operator
+   decision - see docs/distribution.md): any registered name must be
+   clearly instance-scoped (e.g. the operator's app namespace), never
+   presented as "the" Frontier Commerce package to depend on.
