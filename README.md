@@ -45,9 +45,10 @@ instance for EF-Map; you run yours.
 
 To use Frontier Commerce for your own application:
 
-1. **Clone/fork and review** the Move package and services, then prove the
-   whole flow locally: `run-demo.ts` publishes everything to a throwaway
-   localnet chain and asserts every step.
+1. **Clone the repo at a release tag** (e.g. `v0.1.0`) and review the Move
+   package and services, then prove the whole flow locally: `run-demo.ts`
+   publishes everything to a throwaway localnet chain and asserts every
+   step.
 2. **Publish your own instance to testnet** with the config-driven deploy
    tool: copy
    [`examples/demo-consumer/deploy.config.example.json`](examples/demo-consumer/deploy.config.example.json),
@@ -63,8 +64,10 @@ To use Frontier Commerce for your own application:
 3. **Keep your caps in your custody**
    ([docs/key-management.md](docs/key-management.md)) — write and test a
    backup/restore runbook before real value exists.
-4. **Integrate the SDK** payment + entitlement flow in your app
-   ([docs/integration-guide.md](docs/integration-guide.md)).
+4. **Integrate the SDK** payment + entitlement flow in your app:
+   `npm install @frontier-commerce/sdk` (pin the exact version matching
+   your release tag) - see
+   [docs/integration-guide.md](docs/integration-guide.md).
 5. Optionally run your own **gas station** (users pay zero gas), the
    **indexer** (accounting that reconciles to chain), and the **Grafana
    operator dashboard** ([observability/README.md](observability/README.md)).
@@ -78,6 +81,20 @@ fee), but that makes the registry publisher a trusted party for recovery
 and fees — the sovereign publish-your-own path above is the recommended
 default, and the authors do not operate a shared instance for third
 parties.
+
+## Versions & distribution
+
+One version number rides the whole release train: git tag `vX.Y.Z` is the
+Move source you deploy, and `@frontier-commerce/sdk@X.Y.Z` on npm is the
+client library built from that same tag (published via npm trusted
+publishing, with provenance). Your deployment descriptor records which
+revision you published from. **MVR (Move Registry) is deliberately not
+used to distribute this protocol** — an MVR name points consumers at one
+registrant's deployment, which is the opposite of sovereign
+deploy-your-own; registering *your own* instance under *your own*
+namespace is a different, legitimate choice. Full model, versioning
+policy and rationale: [docs/distribution.md](docs/distribution.md);
+release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Repository layout
 
@@ -124,6 +141,7 @@ has its own unit suite and a live-testnet validator
 - [docs/security-model.md](docs/security-model.md) - threat model, authority matrix, invariants, testnet vs mainnet posture
 - [docs/key-management.md](docs/key-management.md) - custody, rotation, revocation, recovery runbooks
 - [docs/integration-guide.md](docs/integration-guide.md) - how a consumer app integrates
+- [docs/distribution.md](docs/distribution.md) - versioning, releases, npm/MVR posture, pinning/upgrading
 - [docs/decision-log.md](docs/decision-log.md) - engineering decisions, newest first
 - [deployments/README.md](deployments/README.md) - the descriptor model
 - [observability/README.md](observability/README.md) - the optional operator dashboard

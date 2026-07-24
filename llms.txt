@@ -13,7 +13,7 @@ Infrastructure library (Move + TS SDK + gas station + indexer); no frontend.
 ## Facts (source-of-truth order)
 
 1. Code, tests, runtime/on-chain evidence
-2. docs/decision-log.md + docs/{architecture,security-model,key-management,integration-guide}.md
+2. docs/decision-log.md + docs/{architecture,security-model,key-management,integration-guide,distribution}.md
 3. README.md (summary)
 4. Model memory (lowest; verify Sui APIs at docs.sui.io / installed @mysten/sui)
 
@@ -28,8 +28,18 @@ Infrastructure library (Move + TS SDK + gas station + indexer); no frontend.
 - examples/demo-consumer/ — localnet E2E proof + testnet deploy/smoke tooling (mutating!)
 - deployments/ — descriptor template + README; deployments generate their own descriptor
 - observability/ — optional Grafana operator dashboard + collector guidance
+- docs/distribution.md + CHANGELOG.md — versioning/release model: git tag vX.Y.Z
+  = SDK npm version (one train); @frontier-commerce/sdk on npm; Move source via
+  release tags; MVR deliberately NOT used for distribution
+
+## Consumption (external apps)
+
+npm install @frontier-commerce/sdk (pin exact version); deploy YOUR OWN Move
+instance from the matching release tag; your deployments/<network>.json is
+runtime truth. No shared deployment exists to join.
 
 ## Hard limits
 
 No mainnet deploys. No testnet publish/smoke as a side effect. No secrets in
 git. No destructive git cleanup. deployments/<network>.json over hard-coded IDs.
+No MVR registration; npm publish only via .github/workflows/release.yml.

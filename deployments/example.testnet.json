@@ -42,6 +42,10 @@
     },
     "mockEve": { "packageId": "<package-id>", "faucetId": "<OpenFaucet-object-id>" },
     "operator": "<deployer-address>",
+    "source": {
+      "repository": "<git-remote-url-you-deployed-from>",
+      "revision": "<git-describe-output, e.g. v0.1.0>"
+    },
     "ranAt": "<iso-timestamp>"
   }
 }

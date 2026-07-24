@@ -37,6 +37,11 @@ file wins. Scoped rules: [`.github/instructions/move.instructions.md`](.github/i
 - Testnet publishes or `testnet-smoke.ts` (mutates chain state, spends
   real testnet SUI, rotates IDs) — never a side effect of another task;
   record in your `deployments/<network>.json` descriptor.
+- Releases: tag `vX.Y.Z` = all workspace versions = SDK npm version (one
+  train; policy in `docs/distribution.md`). npm publishing happens only
+  via `.github/workflows/release.yml` (trusted publishing — no tokens).
+  Making any package other than the SDK publishable is an operator
+  decision.
 - Changes to event/stored struct layouts (upgrade compatibility), the
   funds-path Move modules, gas-station `policy.ts`/`sponsor.ts`, or the
   security model's authority separation.
@@ -55,3 +60,6 @@ file wins. Scoped rules: [`.github/instructions/move.instructions.md`](.github/i
 - Remove failing tests to make CI pass.
 - Add compile-time dependencies on EVE Frontier packages to the Move code
   (currency is configuration), or a frontend to this repo.
+- Register MVR names/PackageInfo objects or publish npm packages outside
+  the release workflow — the MVR no-registration posture is deliberate
+  (`docs/distribution.md`).

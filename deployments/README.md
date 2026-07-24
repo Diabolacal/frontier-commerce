@@ -26,6 +26,12 @@ authority, and possession of an ID grants nothing. Whether you commit
 your real descriptor to your own (public or private) repo is your call;
 the authors keep theirs in a private operations repo.
 
+The deploy tool also stamps `evidence.source` (git remote + `git
+describe` revision) into the descriptor, so every deployment records
+**which released source it was published from** — that, not any on-chain
+field, is how "my instance runs Frontier Commerce v0.1.0" is answered.
+See [docs/distribution.md](../docs/distribution.md).
+
 There is deliberately **no `mainnet.json`** and the SDK refuses one —
 see the mainnet promotion checklist in
 [docs/security-model.md](../docs/security-model.md).
