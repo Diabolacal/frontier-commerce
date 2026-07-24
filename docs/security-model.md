@@ -153,7 +153,7 @@ balance and the rate/daily caps, not key secrecy heroics.
    multisig custodians; verify on-chain ownership.
 6. Write `deployments/mainnet.json`; remove the SDK mainnet guard in the
    same reviewed PR; pin the EVE mainnet coin type from the official assets
-   package (verify against CCP's published address, not memory).
+   package (verify against Fenris Creations' published address, not memory).
 7. Stand up gas station + indexer on monitored infra with alerting; fund
    sponsor float from a tracked wallet.
 8. Run a real-value canary: one paid product at trivial price; full

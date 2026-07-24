@@ -164,6 +164,6 @@ Load-bearing rules:
 
 [Apache-2.0](LICENSE).
 
-EVE Frontier is a trademark of CCP ehf. This is an independent community
-project: not affiliated with, endorsed by, or supported by CCP or Mysten
-Labs.
+EVE Frontier is a trademark of Fenris Creations ehf. This is an independent
+community project: not affiliated with, endorsed by, or supported by Fenris
+Creations or Mysten Labs.
