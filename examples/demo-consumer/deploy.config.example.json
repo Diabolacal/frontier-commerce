@@ -1,0 +1,35 @@
+{
+  "$comment": "Copy to deploy.config.json, replace every REPLACE-* value, then run deploy-testnet.ts. Coin types are runtime configuration: verify the CURRENT cycle's coin type on-chain before every deployment - never assume a cached one.",
+  "merchantName": "REPLACE-your-app-slug",
+  "coins": {
+    "EVE": {
+      "coinType": "REPLACE-current-cycle-EVE-coin-type (0x...::EVE::EVE)",
+      "decimals": 9,
+      "symbol": "EVE"
+    }
+  },
+  "publishMockEve": true,
+  "products": [
+    {
+      "name": "pro-30d",
+      "kind": "subscription",
+      "currency": "EVE",
+      "priceRaw": "1000000000",
+      "durationMs": 2592000000,
+      "entitlementKey": "pro",
+      "metadataUri": "https://your-app.example/pro"
+    },
+    {
+      "name": "pro-smoke-30d",
+      "kind": "subscription",
+      "currency": "MOCK",
+      "priceRaw": "1000000000",
+      "durationMs": 2592000000,
+      "entitlementKey": "pro-smoke"
+    }
+  ],
+  "validationPurchase": {
+    "productName": "pro-smoke-30d",
+    "assertNotGranted": ["pro"]
+  }
+}

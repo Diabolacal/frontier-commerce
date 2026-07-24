@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: Commerce Postgres
+    uid: commerce-postgres # the dashboard's panels reference this uid
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: postgres
+    jsonData:
+      database: postgres
+      sslmode: disable
+      postgresVersion: 1600
+    secureJsonData:
+      password: $PGPASSWORD # injected from the Grafana container's environment

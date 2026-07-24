@@ -1,0 +1,21 @@
+{
+  "name": "@frontier-commerce/obs-collector",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Read-only observability collector: canonical indexer ledger + on-chain reconciliation + sponsor health, projected into Postgres for the Grafana operator dashboard",
+  "type": "module",
+  "main": "collector.mjs",
+  "scripts": {
+    "build": "echo \"(plain .mjs - nothing to build)\"",
+    "typecheck": "echo \"(plain .mjs - no typecheck)\"",
+    "test": "echo \"(exercised via the dashboard against a live deployment)\"",
+    "start": "node collector.mjs"
+  },
+  "dependencies": {
+    "@frontier-commerce/indexer": "workspace:*",
+    "@frontier-commerce/sdk": "workspace:*",
+    "@mysten/sui": "^2.22.0",
+    "pg": "^8.13.1"
+  }
+}

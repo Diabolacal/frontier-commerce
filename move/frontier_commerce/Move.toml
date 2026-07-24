@@ -1,0 +1,14 @@
+[package]
+name = "frontier_commerce"
+edition = "2024"
+# No version field: versioning is by git tag + on-chain package version.
+
+[addresses]
+frontier_commerce = "0x0"
+
+# Chain environments this package is published to. Chain IDs, not URLs.
+# testnet_stillness = EVE Frontier "Stillness" tenant on Sui testnet (chain 4c78adac).
+# NOTE: no mainnet environment exists yet - deliberately. Add one only via the
+# mainnet promotion checklist in docs/security-model.md.
+[environments]
+testnet_stillness = "4c78adac"

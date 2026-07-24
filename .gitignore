@@ -1,0 +1,35 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Move build artifacts
+move/*/build/
+
+# Local env & secrets - NEVER commit key material
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.keystore
+
+# Indexer local state
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Logs / scratch
+*.log
+scratch/
+.tmp-*
+
+# Agent working memory (session-local; durable state goes in docs/decision-log.md)
+docs/working_memory/
+
+# Local agent runtime state
+.claude/
+
+# OS noise
+.DS_Store
+Thumbs.db

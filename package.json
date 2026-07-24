@@ -1,0 +1,23 @@
+{
+  "name": "frontier-commerce",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Reusable commerce/payment layer for the EVE Frontier ecosystem on Sui",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Diabolacal/frontier-commerce.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "packageManager": "pnpm@10.16.1",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "move:build": "sui move build --path move/frontier_commerce && sui move build --path move/mock_eve",
+    "move:test": "sui move test --path move/frontier_commerce"
+  }
+}

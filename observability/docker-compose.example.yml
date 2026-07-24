@@ -1,0 +1,54 @@
+# Self-contained example stack: Postgres + Grafana + the collector.
+# Copy next to your deployment, provide the two env values, and run
+#   docker compose -f observability/docker-compose.example.yml up -d
+# from the repo root. This is an EXAMPLE topology - fold the pieces into
+# your existing Postgres/Grafana if you already run them.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD in your environment or an env file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  collector:
+    build:
+      context: ..
+      dockerfile: observability/collector/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGDATABASE: postgres
+      PGPASSWORD: ${PGPASSWORD}
+      DEPLOYMENT_PATH: /app/deployment.json
+      # SPONSOR_HEALTH_URL: http://your-gas-station:8787/health   # optional
+      # SUI_GRAPHQL_URL / SUI_GRPC_URL default to public testnet endpoints
+    volumes:
+      - ./collector-data:/data
+      - ../deployments/testnet.json:/app/deployment.json:ro
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    depends_on:
+      - postgres
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      PGPASSWORD: ${PGPASSWORD}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana:/var/lib/grafana/dashboards/frontier-commerce
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  pgdata:
+  grafana-data:

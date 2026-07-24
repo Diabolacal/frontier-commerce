@@ -1,0 +1,25 @@
+{
+  "name": "@frontier-commerce/demo-consumer",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Proof harness: a fictional consumer app ('Starmap Plus') driving the commerce layer end-to-end on localnet/testnet",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"(exercised via demo scripts)\"",
+    "demo:localnet": "node --experimental-strip-types src/run-demo.ts",
+    "smoke:testnet": "node --experimental-strip-types src/testnet-smoke.ts"
+  },
+  "dependencies": {
+    "@frontier-commerce/gas-station": "workspace:*",
+    "@frontier-commerce/indexer": "workspace:*",
+    "@frontier-commerce/sdk": "workspace:*",
+    "@mysten/sui": "^2.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.2"
+  }
+}

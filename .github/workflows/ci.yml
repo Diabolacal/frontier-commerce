@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  move-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Sui CLI
+        run: |
+          set -euo pipefail
+          VERSION="testnet-v1.75.1"
+          curl -sSfL -o sui.tgz \
+            "https://github.com/MystenLabs/sui/releases/download/${VERSION}/sui-${VERSION}-ubuntu-x86_64.tgz"
+          mkdir -p "$HOME/sui-bin"
+          tar -xzf sui.tgz -C "$HOME/sui-bin"
+          echo "$HOME/sui-bin" >> "$GITHUB_PATH"
+      - name: Normalize Move.lock path separators
+        # The Sui CLI (1.75.x, lock v4) writes the framework dependency
+        # `subdir` with platform-native separators, and local builds happen
+        # on Windows - so the committed locks carry backslashes, which the
+        # Linux loader rejects. Normalize in-place; revs stay pinned.
+        run: sed -i 's#\\#/#g' move/frontier_commerce/Move.lock move/mock_eve/Move.lock
+      - name: Move build + tests
+        run: |
+          sui --version
+          sui move build --path move/frontier_commerce
+          sui move build --path move/mock_eve
+          sui move test --path move/frontier_commerce
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version comes from package.json's `packageManager` field;
+      # specifying one here too makes action-setup@v4 hard-fail.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r typecheck
+      - run: pnpm -r test

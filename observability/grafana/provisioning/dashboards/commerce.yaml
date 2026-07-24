@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: Frontier Commerce
+    orgId: 1
+    folder: Frontier Commerce
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/frontier-commerce

@@ -1,0 +1,35 @@
+# frontier-commerce
+
+Reusable commerce/payment layer for the EVE Frontier ecosystem on Sui.
+Infrastructure library (Move + TS SDK + gas station + indexer); no frontend.
+
+## Rules (authority order)
+
+1. .github/copilot-instructions.md — canonical repo-wide rules (wins on conflict)
+2. .github/instructions/move.instructions.md — scoped: **/*.move
+3. .github/instructions/typescript.instructions.md — scoped: **/*.ts
+4. AGENTS.md, CLAUDE.md — shortened mirrors/pointers only
+
+## Facts (source-of-truth order)
+
+1. Code, tests, runtime/on-chain evidence
+2. docs/decision-log.md + docs/{architecture,security-model,key-management,integration-guide}.md
+3. README.md (summary)
+4. Model memory (lowest; verify Sui APIs at docs.sui.io / installed @mysten/sui)
+
+## Map
+
+- move/frontier_commerce/ — Move package (registry, merchant, catalog, payments,
+  entitlements, credits, treasury, events, types, vault) + tests/
+- move/mock_eve/ — testnet-only mock currency (never mainnet)
+- packages/sdk/ — pure client: config, PTB builders, queries, event parsing
+- packages/gas-station/ — sponsorship service (only key-holding component)
+- packages/indexer/ — event poller -> SQLite ledger -> reports (cache, not authority)
+- examples/demo-consumer/ — localnet E2E proof + testnet deploy/smoke tooling (mutating!)
+- deployments/ — descriptor template + README; deployments generate their own descriptor
+- observability/ — optional Grafana operator dashboard + collector guidance
+
+## Hard limits
+
+No mainnet deploys. No testnet publish/smoke as a side effect. No secrets in
+git. No destructive git cleanup. deployments/<network>.json over hard-coded IDs.
