@@ -67,7 +67,7 @@ value types) · `catalog` · `payments` · `entitlements` · `credits` ·
 
 - Changing any event or stored struct layout breaks in-place upgrades.
   Pre-mainnet this is allowed and rides the next **fresh publish** (testnet
-  IDs rotate; note it in `docs/deployments.md`). Once a deployment has
+  IDs rotate; note it in your deployment descriptor). Once a deployment has
   real consumers: never change existing fields — add `...V2` structs (see
   `events.move` header). State the upgrade consequence in your PR.
 - Bump `registry::VERSION` when shared-object semantics change; add

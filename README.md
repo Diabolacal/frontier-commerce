@@ -111,6 +111,13 @@ payment through the real gas station (user pays zero gas)** -> split
 distribution -> fee sweep -> indexer reconciliation (event-derived treasury
 must equal on-chain treasury). Every step asserts.
 
+One caveat: the indexer-reconciliation step needs localnet GraphQL - start
+localnet with `sui start --with-faucet --with-graphql --force-regenesis`
+(requires a local PostgreSQL). Without it the demo still passes everything
+else and prints an explicit SKIPPED warning for that step; the poller also
+has its own unit suite and a live-testnet validator
+(`validate-poller.ts`).
+
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - object model, module map, flows, what lives on/off chain

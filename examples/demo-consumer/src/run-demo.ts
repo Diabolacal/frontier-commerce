@@ -322,7 +322,7 @@ async function main(): Promise<void> {
   // Localnet GraphQL (:9125) requires `sui start --with-graphql`, which needs
   // a local PostgreSQL. On machines without it the poller step is skipped
   // with an honest warning — the poller has its own vitest suite plus a live
-  // testnet validation script (validate-poller-testnet.ts); everything else
+  // testnet validation script (validate-poller.ts); everything else
   // in this demo remains fully asserted.
   log('Indexer: polling events and reconciling ledger vs chain');
   const graphqlUp = await fetch('http://127.0.0.1:9125/graphql', {

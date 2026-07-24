@@ -36,7 +36,7 @@ file wins. Scoped rules: [`.github/instructions/move.instructions.md`](.github/i
 ⚠️ **Ask first / explicit instruction only**
 - Testnet publishes or `testnet-smoke.ts` (mutates chain state, spends
   real testnet SUI, rotates IDs) — never a side effect of another task;
-  record in `docs/deployments.md`.
+  record in your `deployments/<network>.json` descriptor.
 - Changes to event/stored struct layouts (upgrade compatibility), the
   funds-path Move modules, gas-station `policy.ts`/`sponsor.ts`, or the
   security model's authority separation.

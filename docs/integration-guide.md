@@ -17,7 +17,23 @@ there or in the testnet smoke script.
   (packageId, originalPackageId, registryId, coin types). Load it at
   runtime; never hard-code IDs in app code.
 - Your own `Merchant` object + caps (one-time setup, below).
-- `@frontier-commerce/sdk` (workspace/git dependency; not on npm).
+- `@frontier-commerce/sdk` (not published to npm; `"private": true` only
+  blocks registry publishing - the consumption paths below all work).
+
+**Consuming the SDK from an app outside this repo** - proven options, in
+order of preference:
+
+1. **Git submodule + workspace** (what the authors do): add this repo as a
+   submodule of your app repo and include
+   `<submodule>/packages/sdk` (and `packages/indexer` if you use it) in
+   your `pnpm-workspace.yaml`; depend on `"@frontier-commerce/sdk":
+   "workspace:*"`. Pins an exact upstream commit; updates are deliberate.
+2. **File dependency on a built checkout:** clone this repo next to your
+   app, `pnpm --filter @frontier-commerce/sdk build`, then depend on
+   `"@frontier-commerce/sdk": "file:../frontier-commerce/packages/sdk"`.
+3. **Publish to your own scope:** fork, rename the package into your npm
+   scope, remove `"private": true` in your fork, publish. Apache-2.0
+   permits this; please keep the licence/NOTICE intact.
 
 ## 1. One-time merchant setup (owner, from a trusted machine)
 

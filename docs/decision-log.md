@@ -26,9 +26,10 @@ their private operations repo.
 
 ## 2026-07-24 - Transport migration: JSON-RPC retired
 
-- **Why:** JSON-RPC was removed from Sui nodes at protocol level
-  2026-07-31, killing the community providers the gas station, indexer and
-  testnet scripts depended on.
+- **Why:** JSON-RPC is removed from Sui nodes at protocol level as of
+  2026-07-31, and testnet endpoints (first-party and the community
+  providers the gas station, indexer and testnet scripts depended on)
+  dropped it ahead of that date.
 - **Transport per job (chosen from the INSTALLED @mysten/sui 2.22 surface,
   not model memory):**
   - Reads/writes/simulation/sponsorship building → **`SuiGrpcClient`**. The
