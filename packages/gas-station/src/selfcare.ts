@@ -221,7 +221,12 @@ export class TestnetSelfCare {
       const inv = await this.deps.gasPool.inventory();
       this.inventory = inv;
       if (this.refillArmed) await this.maybeRefill(inv);
-      if (this.maintenanceArmed) await this.maybeSplit(inv);
+      if (this.maintenanceArmed) {
+        const minted = await this.maybeSplit(inv);
+        // Re-read after a split so /health reports the pool we just built,
+        // not the one that triggered the maintenance.
+        if (minted) this.inventory = await this.deps.gasPool.inventory();
+      }
       this.lastError = null;
     } catch (e) {
       this.lastError = (e as Error).message;
@@ -282,8 +287,9 @@ export class TestnetSelfCare {
     return Math.max(0, Math.min(need, affordable, this.deps.opts.maxSplitsPerTx));
   }
 
-  private async maybeSplit(inv: GasPoolInventory): Promise<void> {
-    if (inv.usableCoins >= this.deps.opts.poolTargetCoins) return;
+  /** Returns true when a split transaction actually executed. */
+  private async maybeSplit(inv: GasPoolInventory): Promise<boolean> {
+    if (inv.usableCoins >= this.deps.opts.poolTargetCoins) return false;
     const { opts } = this.deps;
 
     // The parent must cover its own gas, at least one new coin, and the
@@ -294,16 +300,17 @@ export class TestnetSelfCare {
     const parent = await this.deps.gasPool.reserveLargest(minParent, 120_000);
     if (!parent) {
       this.splitLastResult = 'no coin large enough to split';
-      return;
+      return false;
     }
 
     const count = this.planSplit(parent.balanceMist, inv.usableCoins);
     if (count <= 0) {
       this.deps.gasPool.release(parent.objectId);
       this.splitLastResult = 'insufficient balance to split';
-      return;
+      return false;
     }
 
+    let minted = false;
     this.splitAttempts += 1;
     this.splitLastAttemptAt = this.now();
     try {
@@ -335,6 +342,7 @@ export class TestnetSelfCare {
         await this.deps.client.core.waitForTransaction({ digest }).catch(() => undefined);
         this.splitCoinsCreated += count;
         this.splitLastResult = `minted ${count} coin(s), digest ${digest}`;
+        minted = true;
       }
     } catch (e) {
       this.splitLastResult = `split error: ${(e as Error).message}`;
@@ -349,6 +357,7 @@ export class TestnetSelfCare {
         result: this.splitLastResult,
       },
     });
+    return minted;
   }
 
   snapshot(): SelfCareSnapshot {

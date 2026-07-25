@@ -224,6 +224,24 @@ describe('gas-coin pool maintenance', () => {
     expect(gasPool.snapshot().reserved).toBe(0);
   });
 
+  it('re-reads the inventory after a split so /health shows the new pool', async () => {
+    const { selfCare, client } = build([coin('1', 2_000_000_000n)], poolOpts);
+    const listCoins = (client as never as { core: { listCoins: ReturnType<typeof vi.fn> } }).core
+      .listCoins;
+    // After the split the chain returns the parent plus 9 fresh coins.
+    listCoins.mockResolvedValue({
+      objects: [
+        coin('1', 1_100_000_000n),
+        ...Array.from({ length: 9 }, (_, i) => coin(String(i + 2), 100_000_000n)),
+      ],
+      hasNextPage: false,
+      cursor: null,
+    });
+    await selfCare.runOnce();
+    expect(selfCare.snapshot().coins).toBe(10);
+    expect(selfCare.snapshot().usableCoins).toBe(10);
+  });
+
   it('does nothing when the pool already meets the target', async () => {
     const coins = Array.from({ length: 12 }, (_, i) => coin(String(i + 1), 100_000_000n));
     const { selfCare, client } = build(coins, poolOpts);
