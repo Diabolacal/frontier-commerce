@@ -310,6 +310,18 @@ describe('GasPool inventory + concurrency ceiling', () => {
     expect(await pool.reserve()).toBeNull(); // -> 503 "gas pool depleted"
   });
 
+  it('reports reservations expiring, not a stuck in-flight count', async () => {
+    const { client } = fakeClient([coin('1', 1_000_000_000n)]);
+    const pool = new GasPool(client, SPONSOR, {
+      ttlMs: 30_000,
+      minCoinBalanceMist: GAS_BUDGET,
+    });
+    const t = 1_000_000;
+    expect(await pool.reserve(t)).not.toBeNull();
+    expect(pool.snapshot(t + 1_000).reserved).toBe(1);
+    expect(pool.snapshot(t + 31_000).reserved).toBe(0);
+  });
+
   it('a split float admits many concurrent sponsorships', async () => {
     const { client } = fakeClient(
       Array.from({ length: 10 }, (_, i) => coin(String(i + 1), 100_000_000n)),

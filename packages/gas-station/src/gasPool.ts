@@ -182,7 +182,13 @@ export class GasPool {
     this.reserved.delete(objectId);
   }
 
-  snapshot(): { reserved: number } {
+  /**
+   * Sweeps first: reservations are only released by a later `reserve()`, so
+   * an unswept count would report the last request's coin as in-flight
+   * forever on an idle station.
+   */
+  snapshot(now: number = Date.now()): { reserved: number } {
+    this.sweep(now);
     return { reserved: this.reserved.size };
   }
 }
