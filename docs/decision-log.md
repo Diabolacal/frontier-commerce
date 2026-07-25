@@ -6,6 +6,54 @@ development period (2026-07-19 → 2026-07-24) that a builder needs to
 understand the system. The authors' deployment-operations history lives in
 their private operations repo.
 
+## 2026-07-25 - Gas station self-care: faucet auto-refill + gas-coin pool
+
+- **Problem (found on a live testnet station):** the station's real
+  concurrency ceiling is the number of DISTINCT sponsor coins holding at
+  least `GAS_BUDGET_MIST`, because `GasPool` pins one coin per in-flight
+  sponsorship. A freshly funded sponsor address owns **one** coin, so the
+  station silently served one sponsorship at a time and answered 503
+  "Sponsor gas pool depleted" to everything concurrent - with a perfectly
+  healthy balance on `/health`. Nothing in the metrics said so, because
+  `/health` reported a balance and never a coin count. Second, smaller
+  problem: on a faucet network the float running dry is pure operator toil.
+- **Decision:** both are platform concerns, not deployment scripts, so they
+  live in the package - a new `selfcare.ts` with a `TestnetSelfCare`
+  maintenance loop, both halves **opt-in and off by default**:
+  - `TESTNET_AUTO_REFILL=true` + `REFILL_THRESHOLD_SUI` asks the network
+    faucet when the float drops, with a cooldown after success and
+    exponential backoff (capped) after refusals. Faucet refusals (rate
+    limits, datacenter-IP blocks) are normal and never crash the station.
+  - `GAS_POOL_TARGET_COINS=N` keeps N independently usable gas coins by
+    splitting the largest coin (`GAS_POOL_COIN_MIST` each, leaving
+    `GAS_POOL_RESERVE_MIST` in the parent, ≤ `GAS_POOL_MAX_SPLITS_PER_TX`
+    per transaction).
+- **Why in-process:** splitting needs the sponsor key to sign. The key
+  only ever exists in this process's environment, so an external splitter
+  script would have to be given it - strictly worse. The loop runs beside
+  the server and shares its client and pool.
+- **Anti-equivocation:** maintenance reserves its parent coin *through the
+  same `GasPool`* (`reserveLargest`, long TTL), so a live sponsorship can
+  never pick the object being split. Equivocating on the sponsor's coin
+  would lock the address for an epoch - this is the only interesting
+  hazard in the change, and it is closed by construction, with a test.
+- **Mainnet:** the faucet half is gated on a `switch` over the networks
+  that HAVE a faucet (testnet/devnet/localnet); `mainnet` cannot enable
+  it even with a hand-set `FAUCET_HOST`.
+- **Observability:** `/health` now reports `pool.coins`, `pool.usableCoins`,
+  `pool.largestCoinMist` (30 s cached, no extra RPC per poll) and a
+  `selfCare` block (last run, last error, refill attempt/result/next
+  eligible time, split attempts/coins created). Operators can finally see
+  the concurrency ceiling.
+- **Scope:** `policy.ts` and `sponsor.ts` are untouched (the validation and
+  co-signing paths are unchanged); `gasPool.ts` gains `reserveLargest()`
+  and `inventory()` additively, `reserve()` keeps its exact semantics.
+- **Validation:** `pnpm typecheck` + 40 vitest tests green (19 new,
+  including "single-coin float admits exactly one concurrent sponsorship"
+  and "a split float admits many"), then a live testnet station: one
+  1.47 SUI coin split into 10, three parallel `/sponsor` calls all 200
+  with three distinct gas coins.
+
 ## 2026-07-24 - Distribution model: npm + tagged releases, deliberately no MVR
 
 - **Goal:** act on Builder Showcase feedback (Sketrov): consumers should

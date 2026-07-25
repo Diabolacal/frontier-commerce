@@ -32,6 +32,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { GasPool } from './gasPool.js';
 import { RateLimiter } from './limits.js';
 import { parsePolicyConfig } from './policy.js';
+import { defaultFaucetHost, isFaucetNetwork, TestnetSelfCare } from './selfcare.js';
 import { sponsorTransactionKind, type SponsorDeps } from './sponsor.js';
 
 const MAX_BODY_BYTES = 128 * 1024;
@@ -64,6 +65,23 @@ export interface ServerEnv {
   DAILY_BUDGET_SUI?: string;
   LOW_BALANCE_THRESHOLD_SUI?: string;
   PORT?: string;
+  /**
+   * Self-care (see selfcare.ts). Both halves are OPT-IN and off by default.
+   * `TESTNET_AUTO_REFILL=true` asks the network faucet when the float runs
+   * low; it is inert off a faucet network (never on mainnet).
+   * `GAS_POOL_TARGET_COINS>0` keeps that many independently usable gas
+   * coins so concurrent sponsorships do not collapse to one in-flight.
+   */
+  TESTNET_AUTO_REFILL?: string;
+  REFILL_THRESHOLD_SUI?: string;
+  FAUCET_HOST?: string;
+  REFILL_COOLDOWN_MINUTES?: string;
+  REFILL_MAX_BACKOFF_MINUTES?: string;
+  GAS_POOL_TARGET_COINS?: string;
+  GAS_POOL_COIN_MIST?: string;
+  GAS_POOL_RESERVE_MIST?: string;
+  GAS_POOL_MAX_SPLITS_PER_TX?: string;
+  SELF_CARE_INTERVAL_SECONDS?: string;
 }
 
 interface AuditEntry {
@@ -138,9 +156,15 @@ async function readBody(req: IncomingMessage): Promise<string | null> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** Parse a decimal-SUI env var into MIST. */
+function suiToMist(raw: string | undefined, fallbackSui: number): bigint {
+  const n = Number(raw ?? fallbackSui);
+  return BigInt(Math.round((Number.isFinite(n) ? n : fallbackSui) * 1e9));
+}
+
 export function buildDeps(
   env: ServerEnv,
-): SponsorDeps & { limiter: RateLimiter; ipLimiter: RateLimiter } {
+): SponsorDeps & { limiter: RateLimiter; ipLimiter: RateLimiter; selfCare: TestnetSelfCare } {
   if (env.SPONSOR_ENABLED !== 'true') {
     throw new Error('SPONSOR_ENABLED must be exactly "true" (kill switch is fail-closed)');
   }
@@ -154,9 +178,10 @@ export function buildDeps(
   // protocol level (2026-07-31); SUI_RPC_URL must be a gRPC endpoint such as
   // https://fullnode.testnet.sui.io:443. Every downstream call already goes
   // through client.core.* (ClientWithCoreApi), so only construction changes.
+  const network = env.SUI_NETWORK ?? 'testnet';
   const client = new SuiGrpcClient({
     baseUrl: env.SUI_RPC_URL ?? 'https://fullnode.testnet.sui.io:443',
-    network: (env.SUI_NETWORK as 'testnet' | 'devnet' | 'localnet' | undefined) ?? 'testnet',
+    network: network as 'testnet' | 'devnet' | 'localnet',
   });
   const gasBudgetMist = BigInt(env.GAS_BUDGET_MIST ?? '50000000'); // 0.05 SUI
   const gasPool = new GasPool(client, sponsorAddress, {
@@ -175,7 +200,40 @@ export function buildDeps(
     windowMs: 60_000,
     dailyBudgetMist: 1n << 62n,
   });
-  return { client, keypair, sponsorAddress, gasPool, policy, gasBudgetMist, limiter, ipLimiter };
+  const selfCare = new TestnetSelfCare({
+    client,
+    keypair,
+    sponsorAddress,
+    gasPool,
+    opts: {
+      network,
+      autoRefill: env.TESTNET_AUTO_REFILL === 'true',
+      refillThresholdMist: suiToMist(env.REFILL_THRESHOLD_SUI, 2),
+      faucetHost:
+        env.FAUCET_HOST ??
+        (isFaucetNetwork(network) ? defaultFaucetHost(network) : ''),
+      refillCooldownMs: Number(env.REFILL_COOLDOWN_MINUTES ?? '30') * 60_000,
+      refillMaxBackoffMs: Number(env.REFILL_MAX_BACKOFF_MINUTES ?? '360') * 60_000,
+      poolTargetCoins: Number(env.GAS_POOL_TARGET_COINS ?? '0'),
+      minCoinBalanceMist: gasBudgetMist,
+      splitCoinMist: BigInt(env.GAS_POOL_COIN_MIST ?? (gasBudgetMist * 2n).toString()),
+      splitGasBudgetMist: gasBudgetMist,
+      parentReserveMist: BigInt(env.GAS_POOL_RESERVE_MIST ?? (gasBudgetMist * 2n).toString()),
+      maxSplitsPerTx: Number(env.GAS_POOL_MAX_SPLITS_PER_TX ?? '20'),
+      intervalMs: Number(env.SELF_CARE_INTERVAL_SECONDS ?? '300') * 1000,
+    },
+  });
+  return {
+    client,
+    keypair,
+    sponsorAddress,
+    gasPool,
+    policy,
+    gasBudgetMist,
+    limiter,
+    ipLimiter,
+    selfCare,
+  };
 }
 
 export function startServer(env: ServerEnv = process.env as ServerEnv): ReturnType<
@@ -212,6 +270,10 @@ export function startServer(env: ServerEnv = process.env as ServerEnv): ReturnTy
         const balanceMist = BigInt(balance.balance);
         const low =
           balanceMist < BigInt(Math.round(Number(env.LOW_BALANCE_THRESHOLD_SUI ?? '2') * 1e9));
+        // Coin COUNT is the real concurrency ceiling (one distinct coin per
+        // in-flight sponsorship), so it belongs next to the balance. Cached
+        // for 30 s so a frequently polled /health costs no extra RPC.
+        const inventory = await deps.gasPool.inventory(30_000).catch(() => null);
         json(
           res,
           200,
@@ -219,7 +281,13 @@ export function startServer(env: ServerEnv = process.env as ServerEnv): ReturnTy
             sponsorAddress: deps.sponsorAddress,
             balanceMist: balanceMist.toString(),
             lowBalance: low,
-            pool: deps.gasPool.snapshot(),
+            pool: {
+              ...deps.gasPool.snapshot(),
+              coins: inventory?.totalCoins ?? null,
+              usableCoins: inventory?.usableCoins ?? null,
+              largestCoinMist: inventory?.largestCoinMist.toString() ?? null,
+            },
+            selfCare: deps.selfCare.snapshot(),
             limiter: {
               daySpendMist: deps.limiter.snapshot().daySpendMist.toString(),
               trackedSenders: deps.limiter.snapshot().trackedSenders,
@@ -335,6 +403,11 @@ export function startServer(env: ServerEnv = process.env as ServerEnv): ReturnTy
       json(res, 500, { error: 'Internal error' }, cors);
     }
   }
+
+  // Maintenance loop (faucet refill / gas-coin pool). No-op unless opted in;
+  // stopped with the server so tests and shutdowns leave no timer behind.
+  deps.selfCare.start();
+  server.on('close', () => deps.selfCare.stop());
 
   const port = Number(env.PORT ?? '8787');
   server.listen(port, () => {

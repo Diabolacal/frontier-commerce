@@ -158,6 +158,35 @@ throttle if shipped to browsers, real auth only for server-to-server),
 `DAILY_BUDGET_SUI` (default 5), `GAS_BUDGET_MIST` (default 0.05 SUI),
 `LOW_BALANCE_THRESHOLD_SUI`, `PORT`.
 
+**Concurrency is coin count, not balance.** Each in-flight sponsorship is
+pinned to a distinct sponsor coin holding at least `GAS_BUDGET_MIST` (two
+sponsorships sharing a coin would equivocate the sponsor address). A
+freshly funded address owns ONE coin, so an otherwise healthy station
+serves one sponsorship at a time and 503s the rest. `/health` reports
+`pool.coins` / `pool.usableCoins` - watch `usableCoins`, not the balance.
+
+Two opt-in self-care controls keep a long-running station healthy (both
+off by default):
+
+- `GAS_POOL_TARGET_COINS=<N>` - a maintenance loop splits the largest
+  sponsor coin until N usable coins exist, i.e. N concurrent
+  sponsorships. Tune with `GAS_POOL_COIN_MIST` (balance per minted coin,
+  default 2x the gas budget), `GAS_POOL_RESERVE_MIST` (never split the
+  parent below this), `GAS_POOL_MAX_SPLITS_PER_TX` (default 20).
+- `TESTNET_AUTO_REFILL=true` - request the network faucet when the float
+  drops under `REFILL_THRESHOLD_SUI` (default 2), with
+  `REFILL_COOLDOWN_MINUTES` (default 30) after a success and exponential
+  backoff up to `REFILL_MAX_BACKOFF_MINUTES` (default 360) after
+  refusals. **Faucet networks only** - testnet/devnet/localnet; mainnet
+  cannot enable it, even with a hand-set `FAUCET_HOST`.
+
+Both run every `SELF_CARE_INTERVAL_SECONDS` (default 300) inside the
+station process, because splitting needs the sponsor key - never export
+the key to an external maintenance script. State is reported in the
+`selfCare` block of `/health`. Do not point two station processes with
+maintenance enabled at one sponsor address: coin reservations are
+process-local.
+
 **Proxy warning:** the per-IP bucket keys on the socket address by
 default. Behind a reverse proxy (Cloudflare, nginx) every client shares
 the proxy's IP - one 30 req/min bucket for ALL users, so a single spammer
