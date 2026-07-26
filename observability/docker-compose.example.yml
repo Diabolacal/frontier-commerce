@@ -29,6 +29,9 @@ services:
       PGDATABASE: postgres
       PGPASSWORD: ${PGPASSWORD}
       DEPLOYMENT_PATH: /app/deployment.json
+      # Merchants are discovered from the descriptor (every evidence.* object
+      # carrying a merchantId). Override only if yours live elsewhere:
+      # MERCHANT_IDS: 0xmerchant-one,0xmerchant-two
       # SPONSOR_HEALTH_URL: http://your-gas-station:8787/health   # optional
       # SUI_GRAPHQL_URL / SUI_GRPC_URL default to public testnet endpoints
     volumes:

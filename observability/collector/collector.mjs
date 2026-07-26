@@ -18,6 +18,12 @@
 //        - registry/merchant pause state + product catalog state on-chain
 //          (<schema>.chain_status / <schema>.product_status).
 //
+// ALL merchant-scoped tables are keyed by merchant_id: one deployment can host
+// several merchants on the same package/registry (e.g. subscriptions on one,
+// in-game consumables on another), and product ids restart at 1 per merchant.
+// Every configured merchant is reconciled; nothing is attributed to "the"
+// merchant. See MERCHANTS below for how they are discovered.
+//
 // Truth layering (deliberate): raw_events/payments/entitlements = INDEXED
 // truth; treasury_recon.onchain_*, chain_status, product_status = ON-CHAIN
 // truth sampled at ts; sponsor_health = RUNTIME health. The dashboard keeps
@@ -61,10 +67,43 @@ if (!/^[a-z_][a-z0-9_]*$/.test(S)) throw new Error(`PG_SCHEMA must be a plain id
 
 const deploymentJson = JSON.parse(readFileSync(DEPLOYMENT_PATH, 'utf8'));
 const deployment = parseDeployment(JSON.stringify(deploymentJson));
-// Generic descriptor shape as written by examples/demo-consumer/src/deploy-testnet.ts.
-const merchantMeta = deploymentJson.evidence?.merchant ?? {};
-const MERCHANT_ID = env('MERCHANT_ID', merchantMeta.merchantId);
-if (!MERCHANT_ID) throw new Error('MERCHANT_ID missing (env or deployment evidence.merchant.merchantId)');
+
+// ------------------------------------------------------------- merchants ----
+// Every object under `evidence` that carries a `merchantId` string is a
+// merchant of this deployment: `evidence.merchant` (the shape
+// examples/demo-consumer/src/deploy-testnet.ts writes) plus any further
+// merchants an operator script records alongside it. Its `products` map (slug
+// -> { productId, entitlementKey, coinType }) drives per-product sampling, so
+// products are always read under the merchant that owns them.
+function discoverMerchants(json) {
+  const found = new Map();
+  for (const [key, val] of Object.entries(json.evidence ?? {})) {
+    if (!val || typeof val !== 'object' || typeof val.merchantId !== 'string') continue;
+    found.set(val.merchantId, {
+      merchantId: val.merchantId,
+      key,
+      name: typeof val.merchantName === 'string' ? val.merchantName : null,
+      products: val.products ?? {},
+    });
+  }
+  return found;
+}
+
+const descriptorMerchants = discoverMerchants(deploymentJson);
+// MERCHANT_IDS (comma-separated) or legacy MERCHANT_ID override discovery;
+// descriptor metadata is still used for any id that matches.
+const configuredIds = env('MERCHANT_IDS', env('MERCHANT_ID', ''))
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const MERCHANTS = (configuredIds.length ? configuredIds : [...descriptorMerchants.keys()]).map(
+  (id) => descriptorMerchants.get(id) ?? { merchantId: id, key: null, name: null, products: {} },
+);
+if (MERCHANTS.length === 0) {
+  throw new Error(
+    'No merchants configured: set MERCHANT_IDS (comma-separated) or record evidence.<name>.merchantId in the deployment descriptor',
+  );
+}
 
 const ledger = openLedger(LEDGER_PATH);
 const grpc = new SuiGrpcClient({ baseUrl: SUI_GRPC_URL, network: deployment.network });
@@ -83,6 +122,35 @@ const log = (msg, extra) =>
 // ---------------------------------------------------------------- schema ----
 const DDL = `
 CREATE SCHEMA IF NOT EXISTS ${S};
+
+-- Migration to per-merchant keys. chain_status and product_status used to be
+-- single-merchant snapshots (chain_status pinned to id = 1, product_status
+-- keyed by product_id alone - which COLLIDES as soon as a second merchant
+-- exists, because product ids restart at 1 per merchant). Both tables are
+-- caches of on-chain state, fully re-derived on the next recon cycle, so the
+-- old rows are moved aside rather than rewritten: nothing is deleted, no
+-- merchant attribution has to be guessed, and the *_pre_multimerchant tables
+-- can be dropped by hand once you have looked at them.
+DO $mig$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+              WHERE table_schema = '${S}' AND table_name = 'chain_status')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = '${S}' AND table_name = 'chain_status'
+                AND column_name = 'merchant_id') THEN
+    RAISE NOTICE 'migrating ${S}.chain_status to one row per merchant';
+    ALTER TABLE ${S}.chain_status RENAME TO chain_status_pre_multimerchant;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+              WHERE table_schema = '${S}' AND table_name = 'product_status')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = '${S}' AND table_name = 'product_status'
+                AND column_name = 'merchant_id') THEN
+    RAISE NOTICE 'migrating ${S}.product_status to (merchant_id, product_id)';
+    ALTER TABLE ${S}.product_status RENAME TO product_status_pre_multimerchant;
+  END IF;
+END
+$mig$;
 
 CREATE TABLE IF NOT EXISTS ${S}.raw_events (
   tx_digest    text   NOT NULL,
@@ -150,8 +218,12 @@ CREATE TABLE IF NOT EXISTS ${S}.treasury_recon (
   PRIMARY KEY (ts, merchant_id, currency)
 );
 
+-- One row per merchant. The registry_* columns are deployment-global (one
+-- registry read per cycle, stamped onto every row) so a single join answers
+-- "is intake paused for this merchant?" without a second lookup.
 CREATE TABLE IF NOT EXISTS ${S}.chain_status (
-  id              int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  merchant_id     text PRIMARY KEY,
+  merchant_key    text,
   ts              timestamptz,
   registry_paused boolean,
   registry_fee_bps int,
@@ -165,7 +237,8 @@ CREATE TABLE IF NOT EXISTS ${S}.chain_status (
 );
 
 CREATE TABLE IF NOT EXISTS ${S}.product_status (
-  product_id      bigint PRIMARY KEY,
+  merchant_id     text NOT NULL,
+  product_id      bigint NOT NULL,
   slug            text,
   active          boolean,
   kind            int,
@@ -176,7 +249,8 @@ CREATE TABLE IF NOT EXISTS ${S}.product_status (
   coin_symbol     text,
   coin_decimals   int,
   updated_at      timestamptz,
-  error           text
+  error           text,
+  PRIMARY KEY (merchant_id, product_id)
 );
 
 CREATE TABLE IF NOT EXISTS ${S}.deployment_info (
@@ -192,6 +266,10 @@ CREATE TABLE IF NOT EXISTS ${S}.deployment_info (
   coins               jsonb,
   updated_at          timestamptz
 );
+-- Every configured merchant: [{ merchant_id, key, name }]. merchant_id above
+-- stays the FIRST configured merchant so existing single-merchant queries keep
+-- working; multi-merchant panels read chain_status instead.
+ALTER TABLE ${S}.deployment_info ADD COLUMN IF NOT EXISTS merchants jsonb;
 
 CREATE TABLE IF NOT EXISTS ${S}.tx_gas (
   tx_digest  text PRIMARY KEY,
@@ -290,6 +368,35 @@ SELECT
   (e.json->>'entitlement_revoked')::boolean AS entitlement_revoked
 FROM ${S}.raw_events e
 WHERE e.event_name = 'RefundEvent';
+
+-- Payments with the labels every revenue question needs: which merchant, which
+-- product (slug), and which app the purchase came from. Attribution rules:
+--   merchant_name / product_slug  <- on-chain catalog sample (NULL until the
+--     first recon cycle has seen that merchant, or for a merchant no longer
+--     configured - the payment is still shown, never dropped by the join);
+--   ref_prefix                    <- the APP-DEFINED external_ref namespace,
+--     i.e. everything before the first ':' ("game-a:<run>:<n>" -> "game-a").
+--     external_ref is opaque to the chain, so this is a convention, not a
+--     guarantee: refs without ':' are reported whole and NULL/'' as '(none)'.
+-- One product can serve several apps (the same consumable bought by two
+-- games), which is exactly why product and ref_prefix are separate columns.
+DROP VIEW IF EXISTS ${S}.payments_labeled;
+CREATE VIEW ${S}.payments_labeled AS
+SELECT
+  p.*,
+  c.merchant_name,
+  ps.slug            AS product_slug,
+  ps.entitlement_key AS product_entitlement_key,
+  ps.coin_symbol,
+  CASE
+    WHEN p.external_ref IS NULL OR p.external_ref = ''  THEN '(none)'
+    WHEN strpos(p.external_ref, ':') > 0 THEN split_part(p.external_ref, ':', 1)
+    ELSE p.external_ref
+  END AS ref_prefix
+FROM ${S}.payments p
+LEFT JOIN ${S}.chain_status c    ON c.merchant_id = p.merchant_id
+LEFT JOIN ${S}.product_status ps ON ps.merchant_id = p.merchant_id
+                                AND ps.product_id = p.product_id;
 `;
 
 // ------------------------------------------------------------------ jobs ----
@@ -299,18 +406,21 @@ async function runDDL() {
   await pool.query(
     `INSERT INTO ${S}.deployment_info
        (id, network, chain_id, package_id, original_package_id, registry_id,
-        publish_digest, merchant_id, sponsor_address, coins, updated_at)
-     VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+        publish_digest, merchant_id, sponsor_address, coins, merchants, updated_at)
+     VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
      ON CONFLICT (id) DO UPDATE SET
        network = EXCLUDED.network, chain_id = EXCLUDED.chain_id,
        package_id = EXCLUDED.package_id, original_package_id = EXCLUDED.original_package_id,
        registry_id = EXCLUDED.registry_id, publish_digest = EXCLUDED.publish_digest,
        merchant_id = EXCLUDED.merchant_id, sponsor_address = EXCLUDED.sponsor_address,
-       coins = EXCLUDED.coins, updated_at = now()`,
+       coins = EXCLUDED.coins, merchants = EXCLUDED.merchants, updated_at = now()`,
     [
       c.network, c.chainId ?? null, c.packageId, c.originalPackageId, c.registryId,
-      c.publishDigest ?? null, MERCHANT_ID, env('SPONSOR_ADDRESS', null),
+      c.publishDigest ?? null, MERCHANTS[0].merchantId, env('SPONSOR_ADDRESS', null),
       JSON.stringify(c.coins ?? {}),
+      JSON.stringify(
+        MERCHANTS.map((m) => ({ merchant_id: m.merchantId, key: m.key, name: m.name })),
+      ),
     ],
   );
 }
@@ -457,9 +567,36 @@ async function gasEnrichJob() {
 
 async function reconJob() {
   const ts = new Date();
-  // Event-derived accounting from the canonical ledger.
+  // Event-derived accounting from the canonical ledger, per merchant.
   const ledgers = buildMerchantLedgers(ledger);
-  const ml = ledgers.get(MERCHANT_ID);
+
+  // Registry state is deployment-global: read once per cycle, then stamped
+  // onto every merchant's chain_status row.
+  let reg = null;
+  let regError = null;
+  try {
+    reg = await getRegistrySummary(grpc, deployment);
+  } catch (e) {
+    regError = String(e?.message ?? e).slice(0, 300);
+    log('recon: registry ERROR', { error: regError });
+  }
+
+  // One merchant failing (RPC hiccup, deleted object) must not hide the rest.
+  for (const merchant of MERCHANTS) {
+    await reconMerchant(ts, merchant, ledgers.get(merchant.merchantId), reg, regError).catch((e) => {
+      const msg = String(e?.message ?? e).slice(0, 300);
+      log('recon: merchant FAILED', { merchant: merchant.merchantId, error: msg });
+      return pool
+        .query(`INSERT INTO ${S}.collector_runs (kind, ok, detail) VALUES ('recon', false, $1)`, [
+          `${merchant.merchantId}: ${msg}`,
+        ])
+        .catch(() => {});
+    });
+  }
+}
+
+async function reconMerchant(ts, merchant, ml, reg, regError) {
+  const merchantId = merchant.merchantId;
   const currencies = new Set();
   for (const coin of Object.values(deployment.coins)) currencies.add(coin.coinType);
   if (ml) for (const c of ml.byCurrency.keys()) currencies.add(c);
@@ -470,8 +607,8 @@ async function reconJob() {
     let fees = null;
     let error = null;
     try {
-      onchain = await getTreasuryValue(grpc, deployment, { merchantId: MERCHANT_ID, coinType: currency });
-      fees = await getFeesAccruedValue(grpc, deployment, { merchantId: MERCHANT_ID, coinType: currency });
+      onchain = await getTreasuryValue(grpc, deployment, { merchantId, coinType: currency });
+      fees = await getFeesAccruedValue(grpc, deployment, { merchantId, coinType: currency });
     } catch (e) {
       error = String(e?.message ?? e).slice(0, 300);
     }
@@ -483,7 +620,7 @@ async function reconJob() {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (ts, merchant_id, currency) DO NOTHING`,
       [
-        ts, MERCHANT_ID, currency, expected.toString(),
+        ts, merchantId, currency, expected.toString(),
         onchain === null ? null : onchain.toString(),
         fees === null ? null : fees.toString(),
         delta, onchain === null ? null : onchain === expected,
@@ -494,62 +631,69 @@ async function reconJob() {
       ],
     );
     if (onchain !== null && onchain !== expected) {
-      log('recon: MISMATCH', { currency, expected: expected.toString(), onchain: onchain.toString() });
+      log('recon: MISMATCH', {
+        merchant: merchantId, currency,
+        expected: expected.toString(), onchain: onchain.toString(),
+      });
     }
   }
 
   // On-chain registry/merchant/product state (the "what is production using" row).
   try {
-    const reg = await getRegistrySummary(grpc, deployment);
-    const mer = await getMerchantSummary(grpc, MERCHANT_ID);
+    const mer = await getMerchantSummary(grpc, merchantId);
     await pool.query(
       `INSERT INTO ${S}.chain_status
-         (id, ts, registry_paused, registry_fee_bps, merchant_paused, merchant_name,
-          credits_enabled, enforce_split, next_payment_id, next_product_id, error)
-       VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
-       ON CONFLICT (id) DO UPDATE SET
-         ts = $1, registry_paused = $2, registry_fee_bps = $3, merchant_paused = $4,
-         merchant_name = $5, credits_enabled = $6, enforce_split = $7,
-         next_payment_id = $8, next_product_id = $9, error = NULL`,
+         (merchant_id, merchant_key, ts, registry_paused, registry_fee_bps, merchant_paused,
+          merchant_name, credits_enabled, enforce_split, next_payment_id, next_product_id, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (merchant_id) DO UPDATE SET
+         merchant_key = EXCLUDED.merchant_key, ts = EXCLUDED.ts,
+         registry_paused = EXCLUDED.registry_paused, registry_fee_bps = EXCLUDED.registry_fee_bps,
+         merchant_paused = EXCLUDED.merchant_paused, merchant_name = EXCLUDED.merchant_name,
+         credits_enabled = EXCLUDED.credits_enabled, enforce_split = EXCLUDED.enforce_split,
+         next_payment_id = EXCLUDED.next_payment_id, next_product_id = EXCLUDED.next_product_id,
+         error = EXCLUDED.error`,
       [
-        ts, reg.paused, Number(reg.feeBps), mer.paused, mer.name,
-        mer.creditsEnabled, mer.enforceSplit,
-        Number(mer.nextPaymentId), Number(mer.nextProductId),
+        merchantId, merchant.key, ts,
+        reg?.paused ?? null, reg === null ? null : Number(reg.feeBps),
+        mer.paused, mer.name, mer.creditsEnabled, mer.enforceSplit,
+        Number(mer.nextPaymentId), Number(mer.nextProductId), regError,
       ],
     );
   } catch (e) {
     const msg = String(e?.message ?? e).slice(0, 300);
     await pool.query(
-      `INSERT INTO ${S}.chain_status (id, ts, error) VALUES (1, $1, $2)
-       ON CONFLICT (id) DO UPDATE SET ts = $1, error = $2`,
-      [ts, msg],
+      `INSERT INTO ${S}.chain_status (merchant_id, merchant_key, ts, merchant_name, error)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (merchant_id) DO UPDATE SET ts = EXCLUDED.ts, error = EXCLUDED.error`,
+      [merchantId, merchant.key, ts, merchant.name, msg],
     ).catch(() => {});
-    log('recon: chain status ERROR', { error: msg });
+    log('recon: chain status ERROR', { merchant: merchantId, error: msg });
   }
 
-  const products = merchantMeta.products ?? {};
+  const products = merchant.products ?? {};
   for (const [slug, p] of Object.entries(products)) {
     let info = null;
     let error = null;
     try {
-      info = await getProductInfo(grpc, deployment, { merchantId: MERCHANT_ID, productId: p.productId });
+      info = await getProductInfo(grpc, deployment, { merchantId, productId: p.productId });
     } catch (e) {
       error = String(e?.message ?? e).slice(0, 300);
     }
     const coin = Object.values(deployment.coins).find((c) => c.coinType === p.coinType);
     await pool.query(
       `INSERT INTO ${S}.product_status
-         (product_id, slug, active, kind, price_raw, duration_ms, entitlement_key,
+         (merchant_id, product_id, slug, active, kind, price_raw, duration_ms, entitlement_key,
           coin_type, coin_symbol, coin_decimals, updated_at, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11)
-       ON CONFLICT (product_id) DO UPDATE SET
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), $12)
+       ON CONFLICT (merchant_id, product_id) DO UPDATE SET
          slug = EXCLUDED.slug, active = EXCLUDED.active, kind = EXCLUDED.kind,
          price_raw = EXCLUDED.price_raw, duration_ms = EXCLUDED.duration_ms,
          entitlement_key = EXCLUDED.entitlement_key, coin_type = EXCLUDED.coin_type,
          coin_symbol = EXCLUDED.coin_symbol, coin_decimals = EXCLUDED.coin_decimals,
          updated_at = now(), error = EXCLUDED.error`,
       [
-        p.productId, slug,
+        merchantId, p.productId, slug,
         info?.active ?? null, info === null ? null : Number(info.kind),
         info === null ? null : info.price.toString(),
         info === null ? null : info.durationMs.toString(),
@@ -573,7 +717,11 @@ async function main() {
   log('collector started', {
     network: deployment.network,
     package: deployment.originalPackageId,
-    merchant: MERCHANT_ID,
+    merchants: MERCHANTS.map((m) => ({
+      merchantId: m.merchantId,
+      key: m.key,
+      products: Object.keys(m.products).length,
+    })),
     ledger: LEDGER_PATH,
     sponsorHealth: SPONSOR_HEALTH_URL ?? '(disabled)',
   });

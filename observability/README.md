@@ -9,8 +9,9 @@ Intelligence on testnet.
 It answers, at a glance:
 
 - Is commerce healthy? Is intake paused anywhere (registry/merchant)?
-- What package/registry/merchant/products is production actually using?
+- What package/registry/merchants/products is production actually using?
 - What payments happened, from which wallet, was gas sponsored?
+- **Which merchant, product and app is the money coming from?**
 - What entitlement was granted, is it active, when does it expire?
 - What is in the merchant treasury, and does **indexed accounting
   reconcile with on-chain state** (the load-bearing trust check)?
@@ -25,12 +26,32 @@ visible instead of hidden:
 
 | Layer | Source | Tables |
 |---|---|---|
-| **Indexed truth** | `@frontier-commerce/indexer` event ledger (SQLite), mirrored to Postgres | `raw_events`, `payments`, `entitlement_*`, `refunds` |
+| **Indexed truth** | `@frontier-commerce/indexer` event ledger (SQLite), mirrored to Postgres | `raw_events`, `payments`, `payments_labeled`, `entitlement_*`, `refunds` |
 | **On-chain truth** | sampled reads via gRPC (`treasury_value`, pause flags, product records) | `treasury_recon`, `chain_status`, `product_status` |
 | **Runtime health** | gas station `/health`, collector self-reporting | `sponsor_health`, `poller_status`, `collector_runs` |
 
 If indexed and on-chain treasury disagree, the **Treasury reconciliation**
 stat goes MISMATCH — distrust the ledger, check the chain directly.
+
+## Many merchants, one deployment
+
+One package/registry can host any number of merchants (a common shape:
+subscriptions on one merchant, in-game consumables on another), and
+**product ids restart at 1 per merchant** — so `product_id` alone is not an
+identity. Every merchant-scoped table is therefore keyed by `merchant_id`
+(`chain_status` one row per merchant, `product_status` keyed by
+`(merchant_id, product_id)`, `treasury_recon` per merchant × currency), and
+the collector reconciles *every* configured merchant. Deployment-wide stats
+(revenue, treasury totals, pause state) aggregate across all of them and
+say so; the **Revenue attribution** row splits them apart.
+
+**Which app did a payment come from?** When two apps sell the *same*
+product — two games sharing one revive consumable — no product-level split
+can separate them, so the `payments_labeled.ref_prefix` column exposes the
+app-defined `external_ref` namespace (everything before the first `:`, i.e.
+`game-a:<run>:<n>` → `game-a`). Namespacing refs that way gives you per-app
+revenue for free. It is an app-side convention: the chain treats
+`external_ref` as opaque bytes and does not enforce uniqueness.
 
 ## Pieces
 
@@ -40,7 +61,7 @@ observability/
                         indexer pollOnce -> SQLite -> Postgres mirror; sponsor /health
                         snapshots; per-tx gas-payer enrichment; 10-min treasury recon
   grafana/
-    frontier-commerce-operator.json          the dashboard (56 panels)
+    frontier-commerce-operator.json          the dashboard (59 panels)
     provisioning/datasources/…               Postgres datasource (uid commerce-postgres)
     provisioning/dashboards/…                file provider
   docker-compose.example.yml                 Postgres + Grafana + collector, self-contained
@@ -48,9 +69,12 @@ observability/
 
 ## What you must configure
 
-1. **A deployment descriptor** — the collector reads merchant + products
-   from `evidence.merchant` (the shape `deploy-testnet.ts` writes), or set
-   `MERCHANT_ID` explicitly.
+1. **A deployment descriptor** — the collector treats every object under
+   `evidence` that carries a `merchantId` as a merchant of this deployment
+   (`evidence.merchant`, the shape `deploy-testnet.ts` writes, plus any
+   further merchants your ops scripts record beside it), and reads each
+   one's `products` map. Override with `MERCHANT_IDS` (comma-separated) or
+   `MERCHANT_ID` when the descriptor is not where your merchant ids live.
 2. **Postgres** — any instance. Env: `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`
    (+ optional `PG_SCHEMA`, default `frontier_commerce`). The collector
    creates its schema/tables/views itself.
@@ -82,6 +106,24 @@ The collector's SQLite ledger is a full, canonical indexer ledger — but if
 you already run `@frontier-commerce/indexer` elsewhere, this one is just
 an optional projection: re-polling is idempotent and a fresh ledger
 rebuilds from the deployment's genesis.
+
+## Upgrading an existing collector
+
+The multi-merchant schema is applied automatically on the next start. Both
+affected tables are caches of on-chain state, so the collector moves the old
+single-merchant rows aside instead of rewriting them — nothing is deleted
+and no merchant attribution is guessed:
+
+| Old | New | Old rows |
+|---|---|---|
+| `chain_status` (single row `id = 1`) | one row per merchant, PK `merchant_id` | `chain_status_pre_multimerchant` |
+| `product_status` (PK `product_id`) | PK `(merchant_id, product_id)` | `product_status_pre_multimerchant` |
+
+Both are repopulated by the first reconciliation cycle (which runs at
+startup), and `deployment_info` gains a `merchants` array. Drop the
+`*_pre_multimerchant` tables by hand once you have looked at them. Import
+the updated dashboard JSON in the same change — the old panels query
+`chain_status WHERE id = 1` and will show no data against the new schema.
 
 ## Security posture
 
