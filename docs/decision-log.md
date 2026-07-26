@@ -6,6 +6,72 @@ development period (2026-07-19 → 2026-07-24) that a builder needs to
 understand the system. The authors' deployment-operations history lives in
 their private operations repo.
 
+## 2026-07-26 - Observability is multi-merchant; revenue attribution by product and app
+
+- **Problem (found on the authors' live testnet deployment the day a second
+  merchant started taking money):** the collector and dashboard were built
+  around "the" merchant. `MERCHANT_ID` came from `evidence.merchant`,
+  `chain_status` was a single row pinned to `id = 1`, and `product_status`
+  was keyed by `product_id` **alone** — but product ids restart at 1 per
+  merchant, so two merchants' product 1 are different products that
+  overwrite each other. Meanwhile `raw_events` is polled per *package*, so
+  the payment/revenue panels happily summed every merchant into one number.
+  Net effect: a deployment could show "revenue 4001" at the top while
+  reconciling only 901 of it and listing only the first merchant's catalog —
+  the second merchant's treasury was never reconciled at all, silently.
+  Nothing was wrong on chain; the *observability* was lying by omission.
+- **Decision: merchant is a first-class dimension, discovered from the
+  descriptor.** Every object under `evidence` carrying a `merchantId` is a
+  merchant of the deployment (`evidence.merchant` plus whatever else an
+  operator's scripts record), with `MERCHANT_IDS` / `MERCHANT_ID` as
+  overrides. All merchant-scoped tables are keyed by merchant
+  (`chain_status` PK `merchant_id`, `product_status` PK
+  `(merchant_id, product_id)`, `treasury_recon` already was), every merchant
+  is reconciled each cycle, and one merchant failing (RPC hiccup, deleted
+  object) is logged per merchant instead of aborting the run. Registry state
+  is read once per cycle and stamped onto each row: deployment-global truth,
+  denormalised so a single join answers "is intake paused for this
+  merchant?".
+- **Considered and rejected:** (a) running one collector process per
+  merchant — N SQLite ledgers re-indexing the same package, N sponsor
+  probes, and cross-merchant totals become impossible; (b) keeping the
+  dashboard single-merchant behind a merchant variable — the operator's
+  first question is "which product is earning", which a filter answers one
+  merchant at a time and a breakdown answers at a glance; (c) a
+  `merchant_id` column with the first configured merchant backfilled in —
+  correct only by luck, and the tables are on-chain caches anyway.
+- **Migration: move aside, don't rewrite.** `chain_status` and
+  `product_status` are caches of chain state re-derived on the next
+  reconciliation, so the DDL renames the pre-multi-merchant tables to
+  `*_pre_multimerchant` (guarded on the absence of `merchant_id`, so it runs
+  once) and creates the new shape beside them. Nothing is deleted, nothing
+  is guessed, and the operator can inspect the old rows before dropping
+  them.
+- **Attribution needs a second axis: the app.** One product can serve
+  several apps — the authors' two arcade games buy the *same* revive
+  consumable — so no product-level split can separate them. The new
+  `payments_labeled` view joins each payment to its merchant name and
+  product slug and exposes `ref_prefix`, the app-defined `external_ref`
+  namespace (everything before the first `:`). Apps that already namespace
+  refs as `<app>:<order>:<n>` get per-app revenue for free. Documented as an
+  app-side convention, not a guarantee: `external_ref` is opaque to the
+  chain and its uniqueness is app-enforced (`payments.move` says so).
+- **Dashboard (56 → 59 panels):** pause state now ORs every merchant;
+  treasury reconciliation requires every merchant × currency in the latest
+  snapshot to agree (and reports "no data" rather than MISMATCH when there
+  is nothing to compare); treasury stats sum across merchants and say so;
+  the deployment and product tables list one row per merchant; the daily
+  payment/revenue series stack by merchant and product; and a new **Revenue
+  attribution** row breaks all-time revenue down by merchant × product and
+  by app. The support playbook no longer tells operators that `product_id 1`
+  identifies a product.
+- **Validation:** the generated DDL was applied against a real populated
+  `ef_commerce` schema inside a transaction and rolled back — both migration
+  branches fire, a second pass is a no-op, and all 49 dashboard queries run
+  against the migrated schema and return the expected rows (an
+  independently-verified 3100/901 EVE split across two merchants, and
+  2900/200/901 across the two games and the subscription flow).
+
 ## 2026-07-26 - Gas station refill hysteresis: `REFILL_TARGET_SUI`
 
 - **Problem (predicted on a live testnet station about to gain a third

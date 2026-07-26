@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Operator console for a Frontier Commerce deployment: payments, entitlements, treasury reconciliation, gas sponsor and indexer health. Fed by the observability collector into the frontier_commerce Postgres schema. Truth layers: payments/entitlements = indexed events; treasury/product/pause panels = sampled on-chain reads; sponsor/poller panels = runtime health.",
+  "description": "Operator console for a Frontier Commerce deployment: payments, entitlements, treasury reconciliation, gas sponsor and indexer health across ALL merchants of the deployment (product ids restart at 1 per merchant, so every merchant-scoped panel is keyed by merchant). Fed by the observability collector into the frontier_commerce Postgres schema. Truth layers: payments/entitlements = indexed events; treasury/product/pause panels = sampled on-chain reads; sponsor/poller panels = runtime health.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -43,7 +43,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "ON-CHAIN truth (sampled every 10 min): registry + merchant pause flags. PAUSED means payments are refused at the Move layer.",
+      "description": "ON-CHAIN truth (sampled every 10 min): the registry pause flag plus EVERY configured merchant's pause flag. PAUSED means payments are refused at the Move layer for at least one merchant — check the deployment table below to see which.",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -112,7 +112,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", CASE WHEN registry_paused OR merchant_paused THEN 0 ELSE 1 END AS value FROM frontier_commerce.chain_status WHERE id = 1;",
+          "rawSql": "SELECT max(ts) AS \"time\", CASE WHEN bool_or(registry_paused) OR bool_or(merchant_paused) THEN 0 ELSE 1 END AS value FROM frontier_commerce.chain_status;",
           "refId": "A"
         }
       ],
@@ -488,7 +488,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "Event-derived expected treasury vs on-chain treasury_value (primary currency). MISMATCH means the ledger and the chain disagree — investigate before trusting either.",
+      "description": "Event-derived expected treasury vs on-chain treasury_value for EVERY merchant and currency in the latest reconciliation snapshot. MISMATCH means at least one pair disagrees — investigate before trusting either side (per-merchant rows in the Treasury & accounting row below).",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -557,7 +557,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", CASE WHEN ok THEN 1 ELSE 0 END AS value FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' AND onchain_mist IS NOT NULL ORDER BY ts DESC LIMIT 1;",
+          "rawSql": "WITH latest AS (\n  SELECT * FROM frontier_commerce.treasury_recon\n  WHERE ts = (SELECT max(ts) FROM frontier_commerce.treasury_recon) AND onchain_mist IS NOT NULL\n)\nSELECT max(ts) AS \"time\",\n       CASE WHEN count(*) = 0 THEN NULL WHEN bool_and(ok) THEN 1 ELSE 0 END AS value\nFROM latest;",
           "refId": "A"
         }
       ],
@@ -1154,7 +1154,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "Descriptor = deployments/testnet.json baked into the collector; pause flags / counters are ON-CHAIN truth sampled every 10 min. IDs link to Suiscan.",
+      "description": "One row per configured merchant. Descriptor columns (network, package, registry) come from the deployment JSON baked into the collector; pause flags and counters are ON-CHAIN truth sampled every 10 min. IDs link to Suiscan.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -1343,7 +1343,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT d.network, d.chain_id, c.merchant_name, c.registry_fee_bps AS fee_bps,\n       c.registry_paused, c.merchant_paused, c.next_payment_id - 1 AS payments_made,\n       d.package_id, d.registry_id, d.merchant_id, d.sponsor_address,\n       c.ts AS chain_sampled_at\nFROM frontier_commerce.deployment_info d\nLEFT JOIN frontier_commerce.chain_status c ON c.id = 1\nWHERE d.id = 1;",
+          "rawSql": "SELECT d.network, d.chain_id, c.merchant_name, c.merchant_id,\n       c.registry_fee_bps AS fee_bps, c.registry_paused, c.merchant_paused,\n       c.next_payment_id - 1 AS payments_made,\n       d.package_id, d.registry_id, d.sponsor_address,\n       c.ts AS chain_sampled_at, c.error\nFROM frontier_commerce.chain_status c\nCROSS JOIN frontier_commerce.deployment_info d\nWHERE d.id = 1\nORDER BY c.merchant_name;",
           "refId": "A"
         }
       ],
@@ -1355,7 +1355,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "ON-CHAIN truth via catalog::product_info (sampled every 10 min): active flag, current price, duration. Product semantics (which product_id is your real paid product vs a smoke/validation product) are defined by your deploy config.",
+      "description": "ON-CHAIN truth via catalog::product_info (sampled every 10 min) for every product of every configured merchant. Product ids restart at 1 per merchant, so merchant + product_id is the key — never product_id alone.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -1440,7 +1440,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT product_id, slug, entitlement_key, active, price_raw / 1e9 AS price, coin_symbol,\n       duration_ms / 86400000.0 AS duration_days, updated_at AS chain_sampled_at, error\nFROM frontier_commerce.product_status ORDER BY product_id;",
+          "rawSql": "SELECT COALESCE(c.merchant_name, left(p.merchant_id, 12)) AS merchant,\n       p.product_id, p.slug, p.entitlement_key, p.active,\n       CASE p.kind WHEN 1 THEN 'one-time' WHEN 2 THEN 'subscription' ELSE p.kind::text END AS kind,\n       p.price_raw / 1e9 AS price, p.coin_symbol,\n       p.duration_ms / 86400000.0 AS duration_days,\n       p.updated_at AS chain_sampled_at, p.error\nFROM frontier_commerce.product_status p\nLEFT JOIN frontier_commerce.chain_status c ON c.merchant_id = p.merchant_id\nORDER BY merchant, p.product_id;",
           "refId": "A"
         }
       ],
@@ -1469,7 +1469,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "INDEXED truth from PaymentEvent.",
+      "description": "INDEXED truth from PaymentEvent, stacked per merchant.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1500,8 +1500,8 @@
             "showPoints": "auto",
             "spanNulls": true,
             "stacking": {
-              "group": "A",
-              "mode": "none"
+              "mode": "normal",
+              "group": "A"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -1549,11 +1549,11 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT $__timeGroup(paid_at, '1d') AS time, count(*) AS payments\nFROM frontier_commerce.payments WHERE $__timeFilter(paid_at) GROUP BY 1 ORDER BY 1;",
+          "rawSql": "SELECT $__timeGroup(paid_at, '1d') AS time,\n       COALESCE(merchant_name, left(merchant_id, 12)) AS metric,\n       count(*) AS payments\nFROM frontier_commerce.payments_labeled\nWHERE $__timeFilter(paid_at) GROUP BY 1, 2 ORDER BY 1;",
           "refId": "A"
         }
       ],
-      "title": "Payments per day",
+      "title": "Payments per day by merchant",
       "type": "timeseries"
     },
     {
@@ -1561,7 +1561,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "INDEXED truth from PaymentEvent (EVE only; smoke-test MOCK payments excluded).",
+      "description": "INDEXED truth from PaymentEvent, stacked per merchant/product (smoke-test MOCK payments excluded). Product slug comes from the on-chain catalog sample, so a product the collector has not sampled yet shows as \"product <id>\".",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1592,8 +1592,8 @@
             "showPoints": "auto",
             "spanNulls": true,
             "stacking": {
-              "group": "A",
-              "mode": "none"
+              "mode": "normal",
+              "group": "A"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -1641,11 +1641,11 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT $__timeGroup(paid_at, '1d') AS time, sum(amount_raw) / 1e9 AS \"EVE\"\nFROM frontier_commerce.payments WHERE $__timeFilter(paid_at) AND currency LIKE '%${currency}' GROUP BY 1 ORDER BY 1;",
+          "rawSql": "SELECT $__timeGroup(paid_at, '1d') AS time,\n       COALESCE(merchant_name, left(merchant_id, 12)) || ' / ' ||\n         COALESCE(product_slug, 'product ' || product_id::text) AS metric,\n       sum(amount_raw) / 1e9 AS value\nFROM frontier_commerce.payments_labeled\nWHERE $__timeFilter(paid_at) AND currency LIKE '%${currency}'\nGROUP BY 1, 2 ORDER BY 1;",
           "refId": "A"
         }
       ],
-      "title": "Gross revenue per day (primary currency)",
+      "title": "Gross revenue per day by product (primary currency)",
       "type": "timeseries"
     },
     {
@@ -1846,7 +1846,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT paid_at, payer, amount_raw / 1e9 AS amount,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       product_id, payment_id, external_ref, sponsored AS gas_sponsored, gas_owner, tx_digest\nFROM frontier_commerce.payments ORDER BY paid_at DESC LIMIT 100;",
+          "rawSql": "SELECT paid_at, COALESCE(merchant_name, left(merchant_id, 12)) AS merchant,\n       COALESCE(product_slug, 'product ' || product_id::text) AS product,\n       payer, amount_raw / 1e9 AS amount,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       payment_id, external_ref, sponsored AS gas_sponsored, gas_owner, tx_digest\nFROM frontier_commerce.payments_labeled ORDER BY paid_at DESC LIMIT 100;",
           "refId": "A"
         }
       ],
@@ -1864,6 +1864,151 @@
         "w": 24,
         "x": 0,
         "y": 38
+      },
+      "id": 57,
+      "panels": [],
+      "title": "Revenue attribution — which merchant, product and app the money came from",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "commerce-postgres"
+      },
+      "description": "INDEXED truth: every PaymentEvent grouped by the merchant and product that received it. This is the answer to \"what is each product earning\". Product ids restart per merchant, so the merchant column is part of the identity. gross is not net of refunds — the reconciliation panels are the accounting truth.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "inspect": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "id": 58,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "10.4.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "commerce-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(merchant_name, left(merchant_id, 12)) AS merchant,\n       COALESCE(product_slug, 'product ' || product_id::text) AS product,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       count(*) AS payments,\n       sum(amount_raw) / 1e9 AS gross,\n       count(DISTINCT payer) AS wallets,\n       min(paid_at) AS first_payment,\n       max(paid_at) AS last_payment\nFROM frontier_commerce.payments_labeled\nGROUP BY 1, 2, 3\nORDER BY gross DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Revenue by merchant and product (all-time)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "commerce-postgres"
+      },
+      "description": "INDEXED truth grouped by the external_ref prefix (everything before the first \":\"). Apps that namespace their refs as \"<app>:<order>:<n>\" get per-app revenue for free — including several apps sharing ONE product, which no product-level split can separate. external_ref is opaque to the chain (uniqueness is app-enforced), so treat this as an app-side convention, not a guarantee.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "inspect": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "id": 59,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "10.4.3",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "commerce-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ref_prefix AS app,\n       ref_prefix,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       count(*) AS payments,\n       sum(amount_raw) / 1e9 AS gross,\n       count(DISTINCT payer) AS wallets,\n       max(paid_at) AS last_payment\nFROM frontier_commerce.payments_labeled\nGROUP BY 1, 2, 3\nORDER BY gross DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Revenue by app (external_ref namespace)",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "postgres",
+        "uid": "commerce-postgres"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
       },
       "id": 25,
       "panels": [],
@@ -1992,7 +2137,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 48
       },
       "id": 26,
       "options": {
@@ -2133,7 +2278,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 57
       },
       "id": 27,
       "options": {
@@ -2174,7 +2319,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 65
       },
       "id": 28,
       "panels": [],
@@ -2186,7 +2331,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "ON-CHAIN truth: treasury::treasury_value<primary currency> on your merchant (withdrawable earnings), sampled every 10 min.",
+      "description": "ON-CHAIN truth: treasury_value summed across ALL merchants (withdrawable earnings), sampled every 10 min. Per-merchant split in the table to the right.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -2208,7 +2353,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 57
+        "y": 66
       },
       "id": 29,
       "options": {
@@ -2236,7 +2381,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", onchain_mist / 1e9 AS value FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' AND onchain_mist IS NOT NULL ORDER BY ts DESC LIMIT 1;",
+          "rawSql": "WITH latest AS (\n  SELECT * FROM frontier_commerce.treasury_recon\n  WHERE currency LIKE '%${currency}'\n    AND ts = (SELECT max(ts) FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}')\n)\nSELECT max(ts) AS \"time\", sum(onchain_mist) / 1e9 AS value FROM latest;",
           "refId": "A"
         }
       ],
@@ -2248,7 +2393,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "INDEXED truth: gross payments − fees − refunds + net credit charges − withdrawals − distributions, from the event ledger.",
+      "description": "INDEXED truth, summed across ALL merchants: gross payments - fees - refunds + net credit charges - withdrawals - distributions, from the event ledger.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -2270,7 +2415,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 57
+        "y": 66
       },
       "id": 30,
       "options": {
@@ -2298,7 +2443,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", expected_mist / 1e9 AS value FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' ORDER BY ts DESC LIMIT 1;",
+          "rawSql": "WITH latest AS (\n  SELECT * FROM frontier_commerce.treasury_recon\n  WHERE currency LIKE '%${currency}'\n    AND ts = (SELECT max(ts) FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}')\n)\nSELECT max(ts) AS \"time\", sum(expected_mist) / 1e9 AS value FROM latest;",
           "refId": "A"
         }
       ],
@@ -2310,7 +2455,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "on-chain − expected. Anything but 0 is a reconciliation failure.",
+      "description": "on-chain - expected, summed across ALL merchants. Anything but 0 is a reconciliation failure — the per-merchant table shows which one.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -2324,7 +2469,7 @@
               },
               {
                 "color": "red",
-                "value": 1e-9
+                "value": 1e-09
               }
             ]
           },
@@ -2336,7 +2481,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 57
+        "y": 66
       },
       "id": 31,
       "options": {
@@ -2364,7 +2509,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", delta / 1e9 AS value FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' AND delta IS NOT NULL ORDER BY ts DESC LIMIT 1;",
+          "rawSql": "WITH latest AS (\n  SELECT * FROM frontier_commerce.treasury_recon\n  WHERE currency LIKE '%${currency}'\n    AND ts = (SELECT max(ts) FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}')\n)\nSELECT max(ts) AS \"time\", sum(delta) / 1e9 AS value FROM latest;",
           "refId": "A"
         }
       ],
@@ -2376,7 +2521,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "ON-CHAIN truth: fees_accrued_value<EVE> — protocol cut awaiting sweep (fee_bps is currently 0, so expect 0).",
+      "description": "ON-CHAIN truth: fees_accrued_value summed across ALL merchants — protocol cut awaiting sweep (with fee_bps 0, expect 0).",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -2398,7 +2543,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 57
+        "y": 66
       },
       "id": 32,
       "options": {
@@ -2426,7 +2571,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", fees_accrued_mist / 1e9 AS value FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' AND fees_accrued_mist IS NOT NULL ORDER BY ts DESC LIMIT 1;",
+          "rawSql": "WITH latest AS (\n  SELECT * FROM frontier_commerce.treasury_recon\n  WHERE currency LIKE '%${currency}'\n    AND ts = (SELECT max(ts) FROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}')\n)\nSELECT max(ts) AS \"time\", sum(fees_accrued_mist) / 1e9 AS value FROM latest;",
           "refId": "A"
         }
       ],
@@ -2460,7 +2605,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 57
+        "y": 66
       },
       "id": 33,
       "options": {
@@ -2522,7 +2667,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 57
+        "y": 66
       },
       "id": 34,
       "options": {
@@ -2562,7 +2707,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "The two lines should sit on top of each other. Divergence = indexer gap or unaccounted treasury movement.",
+      "description": "Both lines sum every merchant at each sample and should sit on top of each other. Divergence = indexer gap or unaccounted treasury movement; the reconciliation table attributes it to a merchant.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2617,7 +2762,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 61
+        "y": 70
       },
       "id": 35,
       "options": {
@@ -2642,11 +2787,11 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT ts AS time, onchain_mist / 1e9 AS \"on-chain\", expected_mist / 1e9 AS \"expected (events)\"\nFROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' AND $__timeFilter(ts) ORDER BY ts;",
+          "rawSql": "SELECT ts AS time, sum(onchain_mist) / 1e9 AS \"on-chain\", sum(expected_mist) / 1e9 AS \"expected (events)\"\nFROM frontier_commerce.treasury_recon WHERE currency LIKE '%${currency}' AND $__timeFilter(ts)\nGROUP BY ts ORDER BY ts;",
           "refId": "A"
         }
       ],
-      "title": "Treasury: on-chain vs expected (primary currency)",
+      "title": "Treasury: on-chain vs expected (primary currency, all merchants)",
       "type": "timeseries"
     },
     {
@@ -2654,7 +2799,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "Latest reconciliation row per currency. unattributed_refunds > 0 would mean per-currency reconciliation is unreliable (legacy events) — surface, never ignore.",
+      "description": "Latest reconciliation row per merchant and currency — this is where a MISMATCH at the top becomes actionable. unattributed_refunds > 0 would mean per-currency reconciliation is unreliable (legacy events): surface, never ignore.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -2682,7 +2827,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 61
+        "y": 70
       },
       "id": 36,
       "options": {
@@ -2706,11 +2851,11 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT DISTINCT ON (currency)\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       payment_count, refund_count, grants, revocations,\n       expected_mist / 1e9 AS expected, onchain_mist / 1e9 AS onchain, delta / 1e9 AS delta,\n       unattributed_refunds, ts AS sampled_at, error\nFROM frontier_commerce.treasury_recon ORDER BY currency, ts DESC;",
+          "rawSql": "SELECT DISTINCT ON (t.merchant_id, t.currency)\n       COALESCE(c.merchant_name, left(t.merchant_id, 12)) AS merchant,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       t.payment_count, t.refund_count, t.grants, t.revocations,\n       t.expected_mist / 1e9 AS expected, t.onchain_mist / 1e9 AS onchain, t.delta / 1e9 AS delta,\n       t.unattributed_refunds, t.ts AS sampled_at, t.error\nFROM frontier_commerce.treasury_recon t\nLEFT JOIN frontier_commerce.chain_status c ON c.merchant_id = t.merchant_id\nORDER BY t.merchant_id, t.currency, t.ts DESC;",
           "refId": "A"
         }
       ],
-      "title": "Ledger aggregates by currency (latest reconciliation)",
+      "title": "Ledger aggregates by merchant and currency (latest reconciliation)",
       "type": "table"
     },
     {
@@ -2723,7 +2868,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 78
       },
       "id": 37,
       "panels": [],
@@ -2794,7 +2939,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 70
+        "y": 79
       },
       "id": 38,
       "options": {
@@ -2886,7 +3031,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 70
+        "y": 79
       },
       "id": 39,
       "options": {
@@ -2978,7 +3123,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 70
+        "y": 79
       },
       "id": 40,
       "options": {
@@ -3037,7 +3182,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 78
+        "y": 87
       },
       "id": 41,
       "options": {
@@ -3099,7 +3244,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 78
+        "y": 87
       },
       "id": 42,
       "options": {
@@ -3161,7 +3306,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 78
+        "y": 87
       },
       "id": 43,
       "options": {
@@ -3223,7 +3368,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 78
+        "y": 87
       },
       "id": 44,
       "options": {
@@ -3286,7 +3431,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 78
+        "y": 87
       },
       "id": 45,
       "options": {
@@ -3356,7 +3501,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 78
+        "y": 87
       },
       "id": 46,
       "options": {
@@ -3401,7 +3546,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 82
+        "y": 91
       },
       "id": 47,
       "panels": [],
@@ -3468,7 +3613,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 92
       },
       "id": 48,
       "options": {
@@ -3533,7 +3678,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 83
+        "y": 92
       },
       "id": 49,
       "options": {
@@ -3597,7 +3742,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 87
+        "y": 96
       },
       "id": 50,
       "options": {
@@ -3638,7 +3783,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 100
       },
       "id": 51,
       "panels": [],
@@ -3658,7 +3803,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 92
+        "y": 101
       },
       "id": 52,
       "options": {
@@ -3667,7 +3812,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "1. **Paste the wallet** (or tx digest) into the **wallet / digest** boxes at the top; every panel in this row filters to it.\n2. **Did the payment land?** → *Payments for filter*. No row: the transaction never succeeded on-chain (check the digest on an explorer) **or** the indexer is stale (check *Indexer freshness* up top). Row present: note `gas_sponsored` (did your sponsor pay gas?) and `product_id` (make sure it is the REAL product, not a smoke/validation product — smoke currency never unlocks the real entitlement if you kept the keys distinct).\n3. **Was the entitlement granted?** → *Entitlement events for filter* should show an `EntitlementGrantedEvent` in the same tx, with your entitlement key and the new expiry.\n4. **Is it active now?** → *Entitlement status for filter*: `active` + `expires_at`. Expired / revoked → that is the answer. **Note:** this is INDEXED truth; your app should enforce the on-chain `entitlements::is_entitled` view — a user unlocked seconds ago may need your app's cache TTL or a fresh session before the UI updates.\n5. **Everything above green but the user is still locked?** → it is an app identity/session problem, not commerce: the wallet the user is signed in with differs from the paying wallet, or your app-side session/device state is stale. That state lives in YOUR app, deliberately not mirrored here.\n6. **Treasury recon MISMATCH** at the top at the same time → distrust the ledger, verify the tx on an explorer directly and check *Collector job failures*.\n\n*Layer key: payments/entitlements here = indexed event ledger · pause flags, product state, treasury values = sampled on-chain reads · sponsor & poller panels = runtime health.*",
+        "content": "1. **Paste the wallet** (or tx digest) into the **wallet / digest** boxes at the top; every panel in this row filters to it.\n2. **Did the payment land?** → *Payments for filter*. No row: the transaction never succeeded on-chain (check the digest on an explorer) **or** the indexer is stale (check *Indexer freshness* up top). Row present: note `gas_sponsored` (did your sponsor pay gas?) and the `merchant` + `product` columns (product ids restart at 1 per merchant, so check both; make sure it is the REAL product, not a smoke/validation product — smoke currency never unlocks the real entitlement if you kept the keys distinct).\n3. **Was the entitlement granted?** → *Entitlement events for filter* should show an `EntitlementGrantedEvent` in the same tx, with your entitlement key and the new expiry.\n4. **Is it active now?** → *Entitlement status for filter*: `active` + `expires_at`. Expired / revoked → that is the answer. **Note:** this is INDEXED truth; your app should enforce the on-chain `entitlements::is_entitled` view — a user unlocked seconds ago may need your app's cache TTL or a fresh session before the UI updates.\n5. **Everything above green but the user is still locked?** → it is an app identity/session problem, not commerce: the wallet the user is signed in with differs from the paying wallet, or your app-side session/device state is stale. That state lives in YOUR app, deliberately not mirrored here.\n6. **Treasury recon MISMATCH** at the top at the same time → distrust the ledger, verify the tx on an explorer directly and check *Collector job failures*.\n\n*Layer key: payments/entitlements here = indexed event ledger · pause flags, product state, treasury values = sampled on-chain reads · sponsor & poller panels = runtime health.*",
         "mode": "markdown"
       },
       "pluginVersion": "10.4.3",
@@ -3806,7 +3951,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 101
+        "y": 110
       },
       "id": 53,
       "options": {
@@ -3830,7 +3975,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "\nSELECT paid_at, payer, beneficiary, amount_raw / 1e9 AS amount,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       product_id, payment_id, external_ref, sponsored AS gas_sponsored, gas_owner, tx_status, tx_digest\nFROM frontier_commerce.payments\nWHERE ('$wallet' = '' OR payer ILIKE '%' || trim('$wallet') || '%' OR beneficiary ILIKE '%' || trim('$wallet') || '%') AND ('$digest' = '' OR tx_digest = trim('$digest'))\nORDER BY paid_at DESC LIMIT 100;",
+          "rawSql": "SELECT paid_at, COALESCE(merchant_name, left(merchant_id, 12)) AS merchant,\n       COALESCE(product_slug, 'product ' || product_id::text) AS product,\n       payer, beneficiary, amount_raw / 1e9 AS amount,\n       CASE WHEN currency LIKE '%${currency}' THEN 'EVE' WHEN currency LIKE '%${currency_smoke}' THEN 'MOCK' ELSE currency END AS coin,\n       payment_id, external_ref, sponsored AS gas_sponsored, gas_owner, tx_status, tx_digest\nFROM frontier_commerce.payments_labeled\nWHERE ('$wallet' = '' OR payer ILIKE '%' || trim('$wallet') || '%' OR beneficiary ILIKE '%' || trim('$wallet') || '%') AND ('$digest' = '' OR tx_digest = trim('$digest'))\nORDER BY paid_at DESC LIMIT 100;",
           "refId": "A"
         }
       ],
@@ -3947,7 +4092,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 108
+        "y": 117
       },
       "id": 54,
       "options": {
@@ -4088,7 +4233,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 108
+        "y": 117
       },
       "id": 55,
       "options": {
@@ -4199,7 +4344,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 115
+        "y": 124
       },
       "id": 56,
       "options": {
