@@ -1,6 +1,6 @@
 {
   "name": "@frontier-commerce/demo-consumer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "Apache-2.0",
   "description": "Proof harness: a fictional consumer app ('Starmap Plus') driving the commerce layer end-to-end on localnet/testnet",
