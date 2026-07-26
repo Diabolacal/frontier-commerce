@@ -74,6 +74,13 @@ export interface ServerEnv {
    */
   TESTNET_AUTO_REFILL?: string;
   REFILL_THRESHOLD_SUI?: string;
+  /**
+   * Stop line for a refill campaign (hysteresis): refilling starts when the
+   * balance dips below REFILL_THRESHOLD_SUI and keeps going (one faucet
+   * request per cooldown window) until it reaches this. Unset = threshold,
+   * i.e. the historical stop-at-threshold behaviour.
+   */
+  REFILL_TARGET_SUI?: string;
   FAUCET_HOST?: string;
   REFILL_COOLDOWN_MINUTES?: string;
   REFILL_MAX_BACKOFF_MINUTES?: string;
@@ -200,6 +207,10 @@ export function buildDeps(
     windowMs: 60_000,
     dailyBudgetMist: 1n << 62n,
   });
+  const refillThresholdMist = suiToMist(env.REFILL_THRESHOLD_SUI, 2);
+  const refillTargetMist = env.REFILL_TARGET_SUI
+    ? suiToMist(env.REFILL_TARGET_SUI, 0)
+    : refillThresholdMist;
   const selfCare = new TestnetSelfCare({
     client,
     keypair,
@@ -208,7 +219,8 @@ export function buildDeps(
     opts: {
       network,
       autoRefill: env.TESTNET_AUTO_REFILL === 'true',
-      refillThresholdMist: suiToMist(env.REFILL_THRESHOLD_SUI, 2),
+      refillThresholdMist,
+      refillTargetMist,
       faucetHost:
         env.FAUCET_HOST ??
         (isFaucetNetwork(network) ? defaultFaucetHost(network) : ''),

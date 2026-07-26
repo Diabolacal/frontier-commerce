@@ -6,6 +6,27 @@ development period (2026-07-19 → 2026-07-24) that a builder needs to
 understand the system. The authors' deployment-operations history lives in
 their private operations repo.
 
+## 2026-07-26 - Gas station refill hysteresis: `REFILL_TARGET_SUI`
+
+- **Problem (predicted on a live testnet station about to gain a third
+  consumer):** `REFILL_THRESHOLD_SUI` is both the start and the stop line —
+  the refill check is a single `balance >= threshold` early-return. Raising
+  the threshold to hold a larger float therefore parks the balance exactly
+  AT the threshold, where every sponsorship the station pays for re-arms a
+  faucet request on the next eligible tick: an endless one-request-per-
+  cooldown trickle (up to 48/day at the 30-min cooldown). Poor faucet
+  citizenship, and `nextEligibleAt` is permanently near-now.
+- **Decision:** add an optional `REFILL_TARGET_SUI` stop line with a
+  hysteresis latch: arm when balance < threshold, keep requesting one grant
+  per cooldown window while armed, disarm at target. Unset (or <=
+  threshold) collapses the band — byte-equivalent to the old single check,
+  so existing deployments are untouched. The latch starts disarmed, so a
+  restart with the balance inside the band waits for a real dip.
+- Cooldown/backoff, the structural faucet-network guard (mainnet cannot
+  enable refill), and one-request-per-tick all unchanged. `/health` now
+  reports `refill.thresholdMist` / `targetMist` / `active` (strings/bool —
+  the snapshot must stay JSON-serialisable, bigints would 500 /health).
+
 ## 2026-07-25 - Gas station self-care: faucet auto-refill + gas-coin pool
 
 - **Problem (found on a live testnet station):** the station's real

@@ -64,6 +64,15 @@ export interface SelfCareOptions {
   /** Ask the faucet when the balance falls below `refillThresholdMist`. */
   autoRefill: boolean;
   refillThresholdMist: bigint;
+  /**
+   * Once refilling has started (balance dipped below the threshold), keep
+   * asking on later eligible ticks until the balance reaches this target —
+   * a hysteresis band, so the station tops up in one campaign and then goes
+   * quiet instead of trickling one request per cooldown window forever.
+   * Values <= `refillThresholdMist` collapse the band to zero width, which
+   * is exactly the historical stop-at-threshold behaviour.
+   */
+  refillTargetMist: bigint;
   /** Faucet base URL; `/v2/gas` is appended. */
   faucetHost: string;
   /** Minimum gap between faucet requests after a SUCCESS. */
@@ -102,6 +111,11 @@ export interface SelfCareSnapshot {
     lastAttemptAt: string | null;
     lastResult: string | null;
     nextEligibleAt: string | null;
+    /** Strings, not bigints — /health JSON.stringify()s this snapshot. */
+    thresholdMist: string;
+    targetMist: string;
+    /** True while the hysteresis latch is topping up toward the target. */
+    active: boolean;
   };
   split: {
     attempts: number;
@@ -160,6 +174,12 @@ export class TestnetSelfCare {
   private refillLastAttemptAt: number | null = null;
   private refillLastResult: string | null = null;
   private refillNextEligibleAt: number | null = null;
+  /**
+   * Hysteresis latch: set when the balance dips below the threshold, cleared
+   * when it reaches the target. Starts false, so a process restarted with a
+   * balance inside the band waits for a real dip before refilling.
+   */
+  private refillActive = false;
 
   private splitAttempts = 0;
   private splitCoinsCreated = 0;
@@ -237,9 +257,20 @@ export class TestnetSelfCare {
     }
   }
 
+  /** The effective stop line: max(target, threshold). */
+  private get refillTargetEffectiveMist(): bigint {
+    const { refillThresholdMist, refillTargetMist } = this.deps.opts;
+    return refillTargetMist > refillThresholdMist ? refillTargetMist : refillThresholdMist;
+  }
+
   private async maybeRefill(inv: GasPoolInventory): Promise<void> {
     const now = this.now();
-    if (inv.totalBalanceMist >= this.deps.opts.refillThresholdMist) return;
+    // Hysteresis: arm below the threshold, disarm at the target. With
+    // target == threshold the band is empty and this is byte-equivalent to
+    // the historical single-line threshold check.
+    if (inv.totalBalanceMist >= this.refillTargetEffectiveMist) this.refillActive = false;
+    else if (inv.totalBalanceMist < this.deps.opts.refillThresholdMist) this.refillActive = true;
+    if (!this.refillActive) return;
     if (this.refillNextEligibleAt !== null && now < this.refillNextEligibleAt) return;
 
     this.refillAttempts += 1;
@@ -269,6 +300,7 @@ export class TestnetSelfCare {
       refill: {
         balanceMist: inv.totalBalanceMist.toString(),
         thresholdMist: this.deps.opts.refillThresholdMist.toString(),
+        targetMist: this.refillTargetEffectiveMist.toString(),
         ok: result.ok,
         detail: result.detail,
         nextEligibleAt: new Date(this.refillNextEligibleAt).toISOString(),
@@ -378,6 +410,9 @@ export class TestnetSelfCare {
         lastAttemptAt: iso(this.refillLastAttemptAt),
         lastResult: this.refillLastResult,
         nextEligibleAt: iso(this.refillNextEligibleAt),
+        thresholdMist: this.deps.opts.refillThresholdMist.toString(),
+        targetMist: this.refillTargetEffectiveMist.toString(),
+        active: this.refillActive,
       },
       split: {
         attempts: this.splitAttempts,

@@ -179,6 +179,15 @@ off by default):
   backoff up to `REFILL_MAX_BACKOFF_MINUTES` (default 360) after
   refusals. **Faucet networks only** - testnet/devnet/localnet; mainnet
   cannot enable it, even with a hand-set `FAUCET_HOST`.
+- `REFILL_TARGET_SUI` (optional) - hysteresis stop line for the refill:
+  once a campaign starts (balance dipped below the threshold), the station
+  keeps requesting one grant per cooldown window until the balance reaches
+  this target, then goes quiet until the next dip below the threshold.
+  Unset (or <= threshold) collapses the band to zero width, reproducing
+  the historical stop-at-threshold behaviour - note that a station parked
+  exactly at its threshold then trickles a request after every sponsorship
+  it pays for. `/health` exposes `selfCare.refill.thresholdMist`,
+  `targetMist` and `active`.
 
 Both run every `SELF_CARE_INTERVAL_SECONDS` (default 300) inside the
 station process, because splitting needs the sponsor key - never export

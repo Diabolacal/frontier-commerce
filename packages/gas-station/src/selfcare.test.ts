@@ -64,6 +64,9 @@ function opts(over: Partial<SelfCareOptions> = {}): SelfCareOptions {
     network: 'testnet',
     autoRefill: true,
     refillThresholdMist: 2_000_000_000n,
+    // Equal to the threshold = the historical stop-at-threshold behaviour;
+    // hysteresis tests override both values explicitly.
+    refillTargetMist: 2_000_000_000n,
     faucetHost: 'https://faucet.example',
     refillCooldownMs: 30 * 60_000,
     refillMaxBackoffMs: 6 * 60 * 60_000,
@@ -182,6 +185,125 @@ describe('auto-refill', () => {
     await selfCare.runOnce();
     expect(selfCare.snapshot().refill.lastResult).toContain('ECONNRESET');
     expect(selfCare.snapshot().lastError).toBeNull();
+  });
+});
+
+describe('auto-refill hysteresis (REFILL_TARGET_SUI)', () => {
+  const band = { refillThresholdMist: 5_000_000_000n, refillTargetMist: 10_000_000_000n };
+  // GasPool.inventory(maxAgeMs=0) still serves its cache when two reads land
+  // in the SAME millisecond (now - at <= 0). Real ticks are minutes apart,
+  // but vitest ticks are sub-millisecond, so yield a beat after mutating the
+  // fake chain state or the second tick reads the stale inventory.
+  const tick = () => new Promise((r) => setTimeout(r, 2));
+
+  it('back-compat: with target == threshold it stops as soon as balance >= threshold', async () => {
+    const clock = { t: 1_000_000 };
+    const { selfCare, faucet, client } = build([coin('1', 500_000_000n)], {}, undefined, clock);
+    await selfCare.runOnce();
+    expect(faucet).toHaveBeenCalledTimes(1);
+    // Balance jumps above the (== target) threshold; a later eligible tick is silent.
+    client.core.listCoins.mockResolvedValue({
+      objects: [coin('1', 2_500_000_000n)],
+      hasNextPage: false,
+      cursor: null,
+    });
+    await tick();
+    clock.t += 31 * 60_000;
+    await selfCare.runOnce();
+    expect(faucet).toHaveBeenCalledTimes(1);
+    expect(selfCare.snapshot().refill.active).toBe(false);
+  });
+
+  it('tops up across cooldown windows until the target, then stops', async () => {
+    const clock = { t: 1_000_000 };
+    const { selfCare, faucet, client } = build([coin('1', 4_000_000_000n)], band, undefined, clock);
+    // 4 SUI < 5 threshold -> arms on the first tick. Simulate +1 SUI per
+    // successful grant; run 8 eligible windows (more than the 6 needed).
+    let balance = 4_000_000_000n;
+    for (let window = 0; window < 8; window++) {
+      const callsBefore = faucet.mock.calls.length;
+      await selfCare.runOnce();
+      if (faucet.mock.calls.length > callsBefore) {
+        balance += 1_000_000_000n; // this window's grant landed
+        client.core.listCoins.mockResolvedValue({
+          objects: [coin('1', balance)],
+          hasNextPage: false,
+          cursor: null,
+        });
+      }
+      await tick();
+      clock.t += 31 * 60_000;
+    }
+    // 4 -> 10 needs 6 grants; the tick that sees >= 10 disarms silently.
+    expect(faucet).toHaveBeenCalledTimes(6);
+    await selfCare.runOnce();
+    expect(faucet).toHaveBeenCalledTimes(6);
+    const s = selfCare.snapshot();
+    expect(s.refill.active).toBe(false);
+    expect(s.refill.thresholdMist).toBe('5000000000');
+    expect(s.refill.targetMist).toBe('10000000000');
+  });
+
+  it('hysteresis: does not start inside the band (restart with 7 SUI)', async () => {
+    const { selfCare, faucet } = build([coin('1', 7_000_000_000n)], band);
+    await selfCare.runOnce();
+    expect(faucet).not.toHaveBeenCalled();
+    expect(selfCare.snapshot().refill.active).toBe(false);
+  });
+
+  it('stays armed inside the band once a campaign has started', async () => {
+    const clock = { t: 1_000_000 };
+    const { selfCare, faucet, client } = build([coin('1', 4_000_000_000n)], band, undefined, clock);
+    await selfCare.runOnce(); // arms + first request at 4 SUI
+    client.core.listCoins.mockResolvedValue({
+      objects: [coin('1', 7_000_000_000n)],
+      hasNextPage: false,
+      cursor: null,
+    });
+    await tick();
+    clock.t += 31 * 60_000;
+    await selfCare.runOnce(); // 7 SUI is inside the band -> still armed
+    expect(faucet).toHaveBeenCalledTimes(2);
+    expect(selfCare.snapshot().refill.active).toBe(true);
+  });
+
+  it('one request per cooldown window while armed', async () => {
+    const clock = { t: 1_000_000 };
+    const { selfCare, faucet } = build([coin('1', 4_000_000_000n)], band, undefined, clock);
+    await selfCare.runOnce();
+    clock.t += 60_000; // 1 min later, cooldown is 30 min
+    await selfCare.runOnce();
+    expect(faucet).toHaveBeenCalledTimes(1);
+  });
+
+  it('backoff on refusal is preserved while armed', async () => {
+    const clock = { t: 1_000_000 };
+    const faucet = vi.fn().mockResolvedValue({ ok: false, detail: 'HTTP 429: rate limited' });
+    const { selfCare } = build([coin('1', 4_000_000_000n)], band, faucet, clock);
+    await selfCare.runOnce();
+    const first = Date.parse(selfCare.snapshot().refill.nextEligibleAt!);
+    expect(first - clock.t).toBe(60 * 60_000); // 30 min * 2^1
+    expect(selfCare.snapshot().refill.active).toBe(true);
+  });
+
+  it('snapshot serializes cleanly (no bigints) and exposes the band', async () => {
+    const { selfCare } = build([coin('1', 4_000_000_000n)], band);
+    await selfCare.runOnce();
+    const s = selfCare.snapshot();
+    expect(() => JSON.stringify(s)).not.toThrow();
+    expect(typeof s.refill.thresholdMist).toBe('string');
+    expect(typeof s.refill.targetMist).toBe('string');
+    expect(typeof s.refill.active).toBe('boolean');
+  });
+
+  it('a target below the threshold collapses to threshold semantics', async () => {
+    const { selfCare, faucet } = build(
+      [coin('1', 4_000_000_000n)],
+      { refillThresholdMist: 5_000_000_000n, refillTargetMist: 1_000_000_000n },
+    );
+    await selfCare.runOnce();
+    expect(faucet).toHaveBeenCalledTimes(1);
+    expect(selfCare.snapshot().refill.targetMist).toBe('5000000000');
   });
 });
 
