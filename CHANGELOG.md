@@ -5,7 +5,22 @@ whole release train (Move source + SDK + services + tooling); only
 `@frontier-commerce/sdk` is published to npm. Versioning policy:
 [docs/distribution.md](docs/distribution.md).
 
-## Unreleased
+## v0.1.2 - 2026-07-27
+
+Operated-services release, same shape as v0.1.1: **Move source and SDK source
+are byte-identical to v0.1.0.** Everything here is the gas station and the
+observability pipeline, so the SDK republishes at 0.1.2 unchanged — an app on
+`@frontier-commerce/sdk@0.1.1` has no reason to upgrade, and no on-chain
+package upgrade is implied. Patch, not minor: the Move/SDK pair the versioning
+policy ties minors to is untouched.
+
+Tagged because the gas station, indexer and collector are consumed by cloning
+at a release tag (see [docs/distribution.md](docs/distribution.md)), so until
+this ships nobody following the documented path can get the fix.
+
+**No operator action required.** The `/health` rename keeps a deprecated alias
+and the schema migration is additive, so an existing collector and dashboard
+keep working untouched across this upgrade.
 
 - **Gas station: the daily budget counter is a RESERVATION, and now says
   so.** The limiter has to admit before the transaction exists, so it
