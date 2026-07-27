@@ -417,7 +417,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "RUNTIME health: worst-case gas budget charged today vs DAILY_BUDGET_SUI. 100% = sponsorships refused until UTC midnight.",
+      "description": "RUNTIME health: how much of today's ADMISSION allowance is used. The station RESERVES the worst-case gas budget per sponsorship, so this is not money spent - real on-chain cost is roughly 20x lower. 100% = sponsorships refused until UTC midnight while the wallet is still perfectly healthy.",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -476,11 +476,11 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS \"time\", CASE WHEN daily_budget_mist > 0 THEN 100.0 * day_spend_mist / daily_budget_mist END AS value FROM frontier_commerce.sponsor_health WHERE ok ORDER BY ts DESC LIMIT 1;",
+          "rawSql": "SELECT ts AS \"time\", CASE WHEN daily_budget_mist > 0 THEN 100.0 * COALESCE(day_reserved_mist, day_spend_mist) / daily_budget_mist END AS value FROM frontier_commerce.sponsor_health WHERE ok ORDER BY ts DESC LIMIT 1;",
           "refId": "A"
         }
       ],
-      "title": "Daily gas budget used",
+      "title": "Daily admission allowance used",
       "type": "stat"
     },
     {
@@ -2976,7 +2976,7 @@
         "type": "postgres",
         "uid": "commerce-postgres"
       },
-      "description": "Worst-case gas budget charged per sponsorship, reset at UTC midnight (and on station restart — in-memory counter).",
+      "description": "Gas budget RESERVED today against the daily cap - worst case per sponsorship, not money spent. Real on-chain cost is roughly 20x lower, so a full bar here means admissions stop, NOT that the float is drained. Watch 'Sponsor SUI balance' for actual drain. Resets at UTC midnight and on station restart (in-memory counter).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3056,11 +3056,11 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "\nSELECT ts AS time, day_spend_mist / 1e9 AS \"spent today\", daily_budget_mist / 1e9 AS \"daily budget\"\nFROM frontier_commerce.sponsor_health WHERE ok AND $__timeFilter(ts) ORDER BY ts;",
+          "rawSql": "\nSELECT ts AS time, COALESCE(day_reserved_mist, day_spend_mist) / 1e9 AS \"reserved today\", daily_budget_mist / 1e9 AS \"daily budget\"\nFROM frontier_commerce.sponsor_health WHERE ok AND $__timeFilter(ts) ORDER BY ts;",
           "refId": "A"
         }
       ],
-      "title": "Daily gas budget spend (SUI)",
+      "title": "Daily gas budget reserved (SUI)",
       "type": "timeseries"
     },
     {

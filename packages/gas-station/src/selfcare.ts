@@ -107,6 +107,7 @@ export interface SelfCareSnapshot {
   refill: {
     attempts: number;
     successes: number;
+    /** ANY consecutive refusals, throttling included. Unchanged semantics. */
     consecutiveFailures: number;
     lastAttemptAt: string | null;
     lastResult: string | null;
@@ -116,6 +117,28 @@ export interface SelfCareSnapshot {
     targetMist: string;
     /** True while the hysteresis latch is topping up toward the target. */
     active: boolean;
+    /**
+     * How the LAST attempt ended, null before the first one. The field to
+     * read when deciding whether anything is actually wrong.
+     */
+    lastOutcome: FaucetOutcome | null;
+    /**
+     * Consecutive GENUINE faults, throttling excluded. This is the alerting
+     * signal: throttling holds it at 0 no matter how long it lasts, so a
+     * non-zero value means the faucet is failing in a way worth looking at.
+     */
+    consecutiveHardFailures: number;
+    /** Last genuine fault, retained across later throttling so it stays visible. */
+    lastHardFailureAt: string | null;
+    lastHardFailureResult: string | null;
+    /**
+     * Rolled-up verdict for dashboards:
+     *   idle        - armed but nothing attempted yet, or refilling not needed
+     *   ok          - last attempt funded the wallet
+     *   rate-limited- being throttled; expected, not actionable
+     *   failing     - genuine fault; investigate
+     */
+    state: 'idle' | 'ok' | 'rate-limited' | 'failing';
   };
   split: {
     attempts: number;
@@ -125,9 +148,41 @@ export interface SelfCareSnapshot {
   };
 }
 
+/**
+ * Why a refill attempt ended, so an operator can tell "the faucet is doing
+ * its normal job of throttling me" from "the faucet is broken".
+ *
+ * Public faucets throttle aggressively and a long-running station sits in
+ * `rateLimited` for hours at a time - that is the STEADY STATE, not an
+ * incident. Before this split, both landed in one `lastResult` string and one
+ * `consecutiveFailures` counter, so the error state was permanently lit and a
+ * genuine outage was invisible underneath it. Alert on `hard`, chart
+ * `rateLimited`.
+ */
+export type FaucetOutcome = 'ok' | 'rateLimited' | 'hard';
+
 export interface FaucetResult {
   ok: boolean;
   detail: string;
+  /**
+   * Optional: a caller (or test) that sets only `ok`/`detail` gets classified
+   * from the detail string by `classifyFaucet` instead.
+   */
+  outcome?: FaucetOutcome;
+}
+
+/**
+ * Decide whether a refusal is routine throttling or a genuine fault.
+ *
+ * Falls back to the detail string on purpose, so this is the SINGLE
+ * classifier for both the real faucet client and any injected one: a caller
+ * reporting `{ok:false, detail:'HTTP 429: ...'}` with no explicit outcome is
+ * still read as throttling and never lights the fault indicator.
+ */
+export function classifyFaucet(result: FaucetResult): FaucetOutcome {
+  if (result.outcome) return result.outcome;
+  if (result.ok) return 'ok';
+  return /\b429\b|too many requests|rate.?limit/i.test(result.detail) ? 'rateLimited' : 'hard';
 }
 
 /**
@@ -141,10 +196,19 @@ export async function requestFaucet(host: string, recipient: string): Promise<Fa
     body: JSON.stringify({ FixedAmountRequest: { recipient } }),
   });
   const text = (await res.text()).slice(0, 300);
-  if (!res.ok) return { ok: false, detail: `HTTP ${res.status}: ${text}` };
+  // 429 is the documented throttle. 503 is a faucet that is up but has
+  // nothing left to give, which is equally "come back later", not a fault.
+  if (res.status === 429 || res.status === 503) {
+    return { ok: false, detail: `HTTP ${res.status}: ${text}`, outcome: 'rateLimited' };
+  }
+  if (!res.ok) return { ok: false, detail: `HTTP ${res.status}: ${text}`, outcome: 'hard' };
   // The v2 faucet answers 200 with {"status":"Success"} or
   // {"status":{"Failure":{...}}} - a 200 is NOT proof of funding.
-  if (/"status"\s*:\s*"Success"/.test(text)) return { ok: true, detail: `HTTP 200: ${text}` };
+  if (/"status"\s*:\s*"Success"/.test(text)) {
+    return { ok: true, detail: `HTTP 200: ${text}`, outcome: 'ok' };
+  }
+  // A 200-with-Failure body still carries throttle wording often enough to be
+  // worth classifying rather than assuming a fault; leave it to classifyFaucet.
   return { ok: false, detail: `HTTP ${res.status}: ${text}` };
 }
 
@@ -170,9 +234,13 @@ export class TestnetSelfCare {
 
   private refillAttempts = 0;
   private refillSuccesses = 0;
-  private refillFailures = 0; // consecutive
+  private refillFailures = 0; // consecutive, throttling included
+  private refillHardFailures = 0; // consecutive, throttling EXCLUDED
   private refillLastAttemptAt: number | null = null;
   private refillLastResult: string | null = null;
+  private refillLastOutcome: FaucetOutcome | null = null;
+  private refillLastHardFailureAt: number | null = null;
+  private refillLastHardFailureResult: string | null = null;
   private refillNextEligibleAt: number | null = null;
   /**
    * Hysteresis latch: set when the balance dips below the threshold, cleared
@@ -257,6 +325,17 @@ export class TestnetSelfCare {
     }
   }
 
+  /**
+   * Rolled-up refill verdict for dashboards. Derived, never stored, so it
+   * cannot drift from the counters it summarises.
+   */
+  private get refillState(): SelfCareSnapshot['refill']['state'] {
+    if (this.refillHardFailures > 0) return 'failing';
+    if (this.refillLastOutcome === null) return 'idle';
+    if (this.refillLastOutcome === 'rateLimited') return 'rate-limited';
+    return this.refillLastOutcome === 'ok' ? 'ok' : 'failing';
+  }
+
   /** The effective stop line: max(target, threshold). */
   private get refillTargetEffectiveMist(): bigint {
     const { refillThresholdMist, refillTargetMist } = this.deps.opts;
@@ -281,15 +360,30 @@ export class TestnetSelfCare {
     } catch (e) {
       result = { ok: false, detail: `request failed: ${(e as Error).message}` };
     }
+    const outcome = classifyFaucet(result);
     this.refillLastResult = result.detail;
+    this.refillLastOutcome = outcome;
     if (result.ok) {
       this.refillSuccesses += 1;
       this.refillFailures = 0;
+      this.refillHardFailures = 0;
       this.refillNextEligibleAt = now + this.deps.opts.refillCooldownMs;
     } else {
       // Refusals are expected (rate limits, datacenter-IP blocks). Back off
-      // so a hostile faucet cannot turn into a request loop.
+      // so a hostile faucet cannot turn into a request loop. Throttling and
+      // genuine faults back off IDENTICALLY - the split is a reporting
+      // distinction, not a scheduling one, because both mean "not now".
       this.refillFailures += 1;
+      if (outcome === 'hard') {
+        this.refillHardFailures += 1;
+        this.refillLastHardFailureAt = now;
+        this.refillLastHardFailureResult = result.detail;
+      } else {
+        // Throttling proves the faucet is reachable and behaving, so it
+        // clears any earlier fault streak. The last fault itself is retained
+        // for forensics; only the "currently failing" signal resets.
+        this.refillHardFailures = 0;
+      }
       const backoff = Math.min(
         this.deps.opts.refillCooldownMs * 2 ** Math.min(this.refillFailures, 10),
         this.deps.opts.refillMaxBackoffMs,
@@ -302,6 +396,7 @@ export class TestnetSelfCare {
         thresholdMist: this.deps.opts.refillThresholdMist.toString(),
         targetMist: this.refillTargetEffectiveMist.toString(),
         ok: result.ok,
+        outcome,
         detail: result.detail,
         nextEligibleAt: new Date(this.refillNextEligibleAt).toISOString(),
       },
@@ -413,6 +508,11 @@ export class TestnetSelfCare {
         thresholdMist: this.deps.opts.refillThresholdMist.toString(),
         targetMist: this.refillTargetEffectiveMist.toString(),
         active: this.refillActive,
+        lastOutcome: this.refillLastOutcome,
+        consecutiveHardFailures: this.refillHardFailures,
+        lastHardFailureAt: iso(this.refillLastHardFailureAt),
+        lastHardFailureResult: this.refillLastHardFailureResult,
+        state: this.refillState,
       },
       split: {
         attempts: this.splitAttempts,

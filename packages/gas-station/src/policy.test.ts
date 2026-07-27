@@ -299,7 +299,7 @@ describe('RateLimiter', () => {
     expect(rl.tryAdmit('0xa', 0n, t0 + 2)).toMatch(/Rate limit/);
     // ...refund restores the budget for OTHER senders...
     rl.refund('0xa', 100n, t0 + 3);
-    expect(rl.snapshot().daySpendMist).toBe(0n);
+    expect(rl.snapshot().dayReservedMist).toBe(0n);
     expect(rl.tryAdmit('0xb', 100n, t0 + 4)).toBeNull();
     // ...but the failing sender's rate limit still counts the attempt, so
     // repeated build-failure spam cannot bypass the per-sender bucket.
@@ -315,7 +315,7 @@ describe('RateLimiter', () => {
     const t0 = Date.UTC(2026, 0, 1, 12, 0, 0);
     // Stray refund with no prior admission.
     rl.refund('0xa', 100n, t0);
-    expect(rl.snapshot().daySpendMist).toBe(0n);
+    expect(rl.snapshot().dayReservedMist).toBe(0n);
     expect(rl.tryAdmit('0xa', 100n, t0 + 1)).toBeNull();
     expect(rl.tryAdmit('0xb', 100n, t0 + 2)).toMatch(/budget/);
   });
