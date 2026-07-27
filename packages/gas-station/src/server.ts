@@ -30,9 +30,14 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { GasPool } from './gasPool.js';
-import { RateLimiter } from './limits.js';
+import { RateLimiter, type LimiterSnapshot } from './limits.js';
 import { parsePolicyConfig } from './policy.js';
-import { defaultFaucetHost, isFaucetNetwork, TestnetSelfCare } from './selfcare.js';
+import {
+  defaultFaucetHost,
+  isFaucetNetwork,
+  TestnetSelfCare,
+  type SelfCareSnapshot,
+} from './selfcare.js';
 import { sponsorTransactionKind, type SponsorDeps } from './sponsor.js';
 
 const MAX_BODY_BYTES = 128 * 1024;
@@ -111,6 +116,61 @@ const startedAt = new Date().toISOString();
 function audit(entry: AuditEntry): void {
   auditCounts[entry.event] += 1;
   console.log(JSON.stringify({ audit: entry }));
+}
+
+export interface HealthInputs {
+  sponsorAddress: string;
+  balanceMist: bigint;
+  lowBalanceThresholdMist: bigint;
+  gasBudgetMist: bigint;
+  pool: { reserved: number };
+  inventory: { totalCoins: number; usableCoins: number; largestCoinMist: bigint } | null;
+  selfCare: SelfCareSnapshot;
+  limiter: LimiterSnapshot;
+  stats: typeof auditCounts;
+  startedAt: string;
+}
+
+/**
+ * Assemble the /health body.
+ *
+ * Split out of the request handler purely so the SHAPE is testable without a
+ * fullnode or a sponsor key. That matters more than it looks: the bug this
+ * endpoint is being fixed for was never a wrong number, it was a right number
+ * under a field name that meant something else. A test that pins these keys
+ * is the thing that stops that recurring.
+ *
+ * Every bigint is stringified — JSON.stringify() throws on bigint, and these
+ * exceed 2^53 often enough that Number would be lossy.
+ */
+export function buildHealthPayload(h: HealthInputs): Record<string, unknown> {
+  return {
+    sponsorAddress: h.sponsorAddress,
+    balanceMist: h.balanceMist.toString(),
+    lowBalance: h.balanceMist < h.lowBalanceThresholdMist,
+    pool: {
+      ...h.pool,
+      coins: h.inventory?.totalCoins ?? null,
+      usableCoins: h.inventory?.usableCoins ?? null,
+      largestCoinMist: h.inventory?.largestCoinMist.toString() ?? null,
+    },
+    selfCare: h.selfCare,
+    limiter: {
+      // RESERVED, not spent. `dayReservedMist == dayAdmitted * gasBudgetMist`,
+      // and the real on-chain cost is far lower — see limits.ts.
+      dayReservedMist: h.limiter.dayReservedMist.toString(),
+      dayAdmitted: h.limiter.dayAdmitted,
+      dailyBudgetMist: h.limiter.dailyBudgetMist.toString(),
+      trackedSenders: h.limiter.trackedSenders,
+      /** @deprecated alias of dayReservedMist; migrate collectors off it. */
+      daySpendMist: h.limiter.daySpendMist.toString(),
+    },
+    stats: { ...h.stats, startedAt: h.startedAt },
+    config: {
+      gasBudgetMist: h.gasBudgetMist.toString(),
+      lowBalanceThresholdMist: h.lowBalanceThresholdMist.toString(),
+    },
+  };
 }
 
 function json(res: ServerResponse, status: number, body: unknown, cors: string | null): void {
@@ -279,9 +339,6 @@ export function startServer(env: ServerEnv = process.env as ServerEnv): ReturnTy
         const { balance } = await deps.client.core.getBalance({
           owner: deps.sponsorAddress,
         });
-        const balanceMist = BigInt(balance.balance);
-        const low =
-          balanceMist < BigInt(Math.round(Number(env.LOW_BALANCE_THRESHOLD_SUI ?? '2') * 1e9));
         // Coin COUNT is the real concurrency ceiling (one distinct coin per
         // in-flight sponsorship), so it belongs next to the balance. Cached
         // for 30 s so a frequently polled /health costs no extra RPC.
@@ -289,30 +346,18 @@ export function startServer(env: ServerEnv = process.env as ServerEnv): ReturnTy
         json(
           res,
           200,
-          {
+          buildHealthPayload({
             sponsorAddress: deps.sponsorAddress,
-            balanceMist: balanceMist.toString(),
-            lowBalance: low,
-            pool: {
-              ...deps.gasPool.snapshot(),
-              coins: inventory?.totalCoins ?? null,
-              usableCoins: inventory?.usableCoins ?? null,
-              largestCoinMist: inventory?.largestCoinMist.toString() ?? null,
-            },
+            balanceMist: BigInt(balance.balance),
+            lowBalanceThresholdMist: suiToMist(env.LOW_BALANCE_THRESHOLD_SUI, 2),
+            gasBudgetMist: deps.gasBudgetMist,
+            pool: deps.gasPool.snapshot(),
+            inventory,
             selfCare: deps.selfCare.snapshot(),
-            limiter: {
-              daySpendMist: deps.limiter.snapshot().daySpendMist.toString(),
-              trackedSenders: deps.limiter.snapshot().trackedSenders,
-              dailyBudgetMist: deps.limiter.snapshot().dailyBudgetMist.toString(),
-            },
-            stats: { ...auditCounts, startedAt },
-            config: {
-              gasBudgetMist: deps.gasBudgetMist.toString(),
-              lowBalanceThresholdMist: BigInt(
-                Math.round(Number(env.LOW_BALANCE_THRESHOLD_SUI ?? '2') * 1e9),
-              ).toString(),
-            },
-          },
+            limiter: deps.limiter.snapshot(),
+            stats: auditCounts,
+            startedAt,
+          }),
           cors,
         );
       } catch (e) {

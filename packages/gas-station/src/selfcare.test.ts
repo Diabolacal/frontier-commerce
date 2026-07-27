@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GasPool } from './gasPool.js';
 import {
+  classifyFaucet,
   defaultFaucetHost,
   isFaucetNetwork,
   TestnetSelfCare,
@@ -185,6 +186,145 @@ describe('auto-refill', () => {
     await selfCare.runOnce();
     expect(selfCare.snapshot().refill.lastResult).toContain('ECONNRESET');
     expect(selfCare.snapshot().lastError).toBeNull();
+  });
+});
+
+describe('throttling vs genuine faults', () => {
+  const refuse = (detail: string, outcome?: 'rateLimited' | 'hard') =>
+    vi.fn().mockResolvedValue({ ok: false, detail, ...(outcome ? { outcome } : {}) });
+
+  describe('classifyFaucet', () => {
+    it('honours an explicit outcome', () => {
+      expect(classifyFaucet({ ok: false, detail: 'anything', outcome: 'rateLimited' })).toBe(
+        'rateLimited',
+      );
+      expect(classifyFaucet({ ok: true, detail: 'ok', outcome: 'ok' })).toBe('ok');
+    });
+
+    it('reads throttling out of the detail string when none is given', () => {
+      // The live station's exact wording, plus the shapes other faucets use.
+      for (const d of [
+        'HTTP 429: Too Many Requests! Wait for 5s',
+        'HTTP 429: rate limited',
+        'HTTP 200: {"status":{"Failure":{"rate_limit":"exceeded"}}}',
+        'too many requests',
+      ]) {
+        expect(classifyFaucet({ ok: false, detail: d })).toBe('rateLimited');
+      }
+    });
+
+    it('treats anything else as a genuine fault', () => {
+      for (const d of [
+        'HTTP 500: internal error',
+        'request failed: ECONNRESET',
+        'HTTP 403: Forbidden',
+      ]) {
+        expect(classifyFaucet({ ok: false, detail: d })).toBe('hard');
+      }
+    });
+  });
+
+  it('a throttled station reports rate-limited, never failing', async () => {
+    const clock = { t: 1_000_000 };
+    const faucet = refuse('HTTP 429: Too Many Requests! Wait for 5s');
+    const { selfCare } = build([coin('1', 500_000_000n)], {}, faucet, clock);
+    // Five windows of throttling — the state the live station sat in.
+    for (let i = 0; i < 5; i++) {
+      await selfCare.runOnce();
+      clock.t = Date.parse(selfCare.snapshot().refill.nextEligibleAt!);
+    }
+    const r = selfCare.snapshot().refill;
+    expect(r.state).toBe('rate-limited');
+    expect(r.lastOutcome).toBe('rateLimited');
+    expect(r.consecutiveHardFailures).toBe(0);
+    expect(r.lastHardFailureAt).toBeNull();
+    // The blunt counter still counts every refusal — semantics unchanged.
+    expect(r.consecutiveFailures).toBe(5);
+  });
+
+  it('a genuine fault is visible and counted separately', async () => {
+    const faucet = refuse('HTTP 500: internal error');
+    const { selfCare, clock } = build([coin('1', 500_000_000n)], {}, faucet);
+    await selfCare.runOnce();
+    const r = selfCare.snapshot().refill;
+    expect(r.state).toBe('failing');
+    expect(r.lastOutcome).toBe('hard');
+    expect(r.consecutiveHardFailures).toBe(1);
+    expect(Date.parse(r.lastHardFailureAt!)).toBe(clock.t);
+    expect(r.lastHardFailureResult).toContain('500');
+  });
+
+  it('a transport error is a fault, not throttling', async () => {
+    const faucet = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const { selfCare } = build([coin('1', 500_000_000n)], {}, faucet);
+    await selfCare.runOnce();
+    expect(selfCare.snapshot().refill.state).toBe('failing');
+    expect(selfCare.snapshot().refill.consecutiveHardFailures).toBe(1);
+  });
+
+  it('later throttling clears the fault streak but keeps the last fault', async () => {
+    // Throttling proves the faucet is reachable and behaving, so "currently
+    // failing" must clear — while the forensic record of the fault survives.
+    const clock = { t: 1_000_000 };
+    const faucet = refuse('HTTP 500: internal error');
+    const { selfCare } = build([coin('1', 500_000_000n)], {}, faucet, clock);
+    await selfCare.runOnce();
+    const faultAt = selfCare.snapshot().refill.lastHardFailureAt;
+    expect(faultAt).not.toBeNull();
+
+    faucet.mockResolvedValue({ ok: false, detail: 'HTTP 429: Too Many Requests! Wait for 5s' });
+    clock.t = Date.parse(selfCare.snapshot().refill.nextEligibleAt!);
+    await selfCare.runOnce();
+
+    const r = selfCare.snapshot().refill;
+    expect(r.state).toBe('rate-limited');
+    expect(r.consecutiveHardFailures).toBe(0);
+    expect(r.lastHardFailureAt).toBe(faultAt);
+    expect(r.lastHardFailureResult).toContain('500');
+  });
+
+  it('a success clears both streaks and reports ok', async () => {
+    const clock = { t: 1_000_000 };
+    const faucet = refuse('HTTP 500: internal error');
+    const { selfCare } = build([coin('1', 500_000_000n)], {}, faucet, clock);
+    await selfCare.runOnce();
+    expect(selfCare.snapshot().refill.state).toBe('failing');
+
+    faucet.mockResolvedValue({ ok: true, detail: 'HTTP 200: {"status":"Success"}' });
+    clock.t = Date.parse(selfCare.snapshot().refill.nextEligibleAt!);
+    await selfCare.runOnce();
+
+    const r = selfCare.snapshot().refill;
+    expect(r.state).toBe('ok');
+    expect(r.consecutiveFailures).toBe(0);
+    expect(r.consecutiveHardFailures).toBe(0);
+  });
+
+  it('throttling and faults back off identically', async () => {
+    // The split is a REPORTING distinction; both still mean "not now".
+    const clock = { t: 1_000_000 };
+    const throttled = build([coin('1', 500_000_000n)], {}, refuse('HTTP 429: slow down'), {
+      ...clock,
+    });
+    const faulted = build([coin('1', 500_000_000n)], {}, refuse('HTTP 500: boom'), { ...clock });
+    await throttled.selfCare.runOnce();
+    await faulted.selfCare.runOnce();
+    expect(throttled.selfCare.snapshot().refill.nextEligibleAt).toBe(
+      faulted.selfCare.snapshot().refill.nextEligibleAt,
+    );
+  });
+
+  it('state is idle before the first attempt', () => {
+    const { selfCare } = build([coin('1', 5_000_000_000n)]);
+    const r = selfCare.snapshot().refill;
+    expect(r.state).toBe('idle');
+    expect(r.lastOutcome).toBeNull();
+  });
+
+  it('snapshot with the new fields still serialises cleanly', async () => {
+    const { selfCare } = build([coin('1', 500_000_000n)], {}, refuse('HTTP 429: slow down'));
+    await selfCare.runOnce();
+    expect(() => JSON.stringify(selfCare.snapshot())).not.toThrow();
   });
 });
 

@@ -158,6 +158,26 @@ throttle if shipped to browsers, real auth only for server-to-server),
 `DAILY_BUDGET_SUI` (default 5), `GAS_BUDGET_MIST` (default 0.05 SUI),
 `LOW_BALANCE_THRESHOLD_SUI`, `PORT`.
 
+**`DAILY_BUDGET_SUI` caps ADMISSIONS, not spend.** The station must decide
+before the transaction exists, so it RESERVES the full `GAS_BUDGET_MIST`
+worst case per sponsorship and never learns the real cost (it co-signs; the
+CLIENT executes, so no receipt comes back). `DAILY_BUDGET_SUI /
+GAS_BUDGET_MIST` is therefore a sponsorship COUNT — 15 SUI at a 0.05 SUI
+budget stops admitting after 300 — and the real drain is far lower. On a
+live testnet station the gap is about 20x: ~0.0025 SUI actually burned per
+sponsorship against a 0.05 SUI reservation, over 426 sponsorships.
+
+Two consequences worth planning for. Size `GAS_BUDGET_MIST` against the
+GROSS cost of your heaviest transaction — computation + storage BEFORE the
+storage rebate, which is what a gas budget has to cover — and not against
+the net wallet drain; set it too low and the user's transaction fails
+on-chain. And read `/health`'s `limiter.dayReservedMist` as reserved, never
+as spent. It sits next to `dayAdmitted`, related by `dayReservedMist ==
+dayAdmitted * gasBudgetMist`. A deprecated `daySpendMist` alias carries the
+same value for collectors written against the old shape; migrate off it.
+Actual spend comes from the sponsor balance or on-chain receipts — never
+from the limiter.
+
 **Concurrency is coin count, not balance.** Each in-flight sponsorship is
 pinned to a distinct sponsor coin holding at least `GAS_BUDGET_MIST` (two
 sponsorships sharing a coin would equivocate the sponsor address). A
@@ -179,6 +199,20 @@ off by default):
   backoff up to `REFILL_MAX_BACKOFF_MINUTES` (default 360) after
   refusals. **Faucet networks only** - testnet/devnet/localnet; mainnet
   cannot enable it, even with a hand-set `FAUCET_HOST`.
+
+  Public faucets throttle hard, so a healthy station SITS in a refused
+  state for hours - that is the steady state, not an incident, and the
+  backoff already spaces the retries out. `/health` separates the two
+  cases so the difference is visible: `selfCare.refill.state` is `idle` /
+  `ok` / `rate-limited` / `failing`, and `consecutiveHardFailures` counts
+  only genuine faults (throttling holds it at 0 however long it lasts).
+  **Alert on `state = failing` or `consecutiveHardFailures > 0`**, not on
+  `consecutiveFailures`, which counts every refusal including routine
+  throttling. `lastHardFailureAt` / `lastHardFailureResult` keep the last
+  real fault visible after throttling resumes. Raising the cooldown to
+  quieten the error state is treating the symptom: it mostly slows
+  SUCCESSFUL top-up campaigns, since one grant per cooldown window is how
+  a campaign climbs to `REFILL_TARGET_SUI`.
 - `REFILL_TARGET_SUI` (optional) - hysteresis stop line for the refill:
   once a campaign starts (balance dipped below the threshold), the station
   keeps requesting one grant per cooldown window until the balance reaches

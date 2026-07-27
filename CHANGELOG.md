@@ -5,6 +5,57 @@ whole release train (Move source + SDK + services + tooling); only
 `@frontier-commerce/sdk` is published to npm. Versioning policy:
 [docs/distribution.md](docs/distribution.md).
 
+## Unreleased
+
+- **Gas station: the daily budget counter is a RESERVATION, and now says
+  so.** The limiter has to admit before the transaction exists, so it
+  reserves the worst-case `GAS_BUDGET_MIST` per sponsorship and never learns
+  the real cost — the station only co-signs, the CLIENT executes. That number
+  was called `daySpendMist` and surfaced as "spent today" all the way out to
+  a Grafana panel, so an operator saw 5.9 SUI of spend on a day that really
+  cost 0.3 SUI and went hunting a leak that did not exist. The mechanism is
+  unchanged — reserving before you know the cost is the correct abuse
+  backstop — only the reporting is fixed.
+  - `/health` gains `limiter.dayReservedMist` and `limiter.dayAdmitted`,
+    related by `dayReservedMist == dayAdmitted * gasBudgetMist` so the
+    mechanism is legible from the payload alone. `limiter.daySpendMist`
+    remains as a **deprecated alias** carrying the identical value so
+    existing collectors keep parsing — migrate off it.
+  - `RateLimiter.snapshot()` now returns the exported `LimiterSnapshot`
+    type, including that alias. A refund releases the admission count with
+    the budget, and a refund arriving after UTC midnight is dropped rather
+    than credited to the new day.
+  - Sizing guidance added to the integration guide: `DAILY_BUDGET_SUI /
+    GAS_BUDGET_MIST` is a sponsorship COUNT, and `GAS_BUDGET_MIST` must
+    cover the GROSS cost (computation + storage, before the storage rebate)
+    of the heaviest sponsored transaction, not the net wallet drain.
+- **Gas station: routine faucet throttling is no longer reported as
+  failure.** Public faucets throttle for hours at a time — the steady state
+  for a healthy station — but every refusal landed in one counter and one
+  error string, so the fault indicator stayed permanently lit and a genuine
+  outage was invisible underneath it. `selfCare.refill` gains `state`
+  (`idle` / `ok` / `rate-limited` / `failing`), `lastOutcome`,
+  `consecutiveHardFailures`, `lastHardFailureAt` and
+  `lastHardFailureResult`. **Alert on `state = failing` or
+  `consecutiveHardFailures > 0`**, not on `consecutiveFailures` (unchanged
+  semantics: every refusal). Backoff and scheduling are untouched — this is
+  a reporting split, not a behaviour change.
+- **Observability.** `sponsor_health` gains `day_reserved_mist`,
+  `day_admitted`, `refill_state`, `refill_hard_failures` and
+  `refill_last_hard_failure_at` (additive `ADD COLUMN IF NOT EXISTS`;
+  `day_spend_mist` keeps receiving the same value so existing panels stay
+  continuous). The collector prefers `dayReservedMist` and falls back to the
+  alias, so it works against a station on either side of this change.
+  Dashboard: "Daily gas budget spend (SUI)" → "Daily gas budget reserved
+  (SUI)" with the series relabelled `spent today` → `reserved today`, and
+  "Daily gas budget used" → "Daily admission allowance used"; both panels
+  now say that a full bar stops admissions rather than draining the float.
+- **New tests.** `limits.test.ts` and `server.test.ts` pin the reservation
+  and refund arithmetic AND the reported field names — the original bug was
+  a correct number under a misleading name, which only a name assertion
+  catches. `buildHealthPayload` is exported so the `/health` shape can be
+  tested without a fullnode or a sponsor key.
+
 ## v0.1.1 - 2026-07-26
 
 Operated-services release: **Move source and SDK source are byte-identical

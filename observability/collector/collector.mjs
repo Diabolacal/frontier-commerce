@@ -186,6 +186,8 @@ CREATE TABLE IF NOT EXISTS ${S}.sponsor_health (
   balance_mist               numeric,
   low_balance                boolean,
   pool_reserved              int,
+  -- Deprecated: never was "spend". See day_reserved_mist below, and the
+  -- ALTER blocks after this table. Kept so pre-existing panels keep drawing.
   day_spend_mist             numeric,
   daily_budget_mist          numeric,
   tracked_senders            int,
@@ -199,6 +201,21 @@ CREATE TABLE IF NOT EXISTS ${S}.sponsor_health (
   error                      text
 );
 CREATE INDEX IF NOT EXISTS idx_fc_sponsor_health_ts ON ${S}.sponsor_health(ts);
+-- The station RESERVES a worst-case gas budget per sponsorship and never
+-- learns the real cost (it co-signs; the client executes). day_spend_mist was
+-- always that reservation, and a dashboard plotting it as "spent today"
+-- overstated a real 0.3 SUI day as 5.9 SUI. day_reserved_mist is the same
+-- number under its true name; day_admitted is the sponsorship count behind it,
+-- so reserved == admitted * gas_budget_mist is checkable in SQL. For ACTUAL
+-- spend join tx_gas, which carries on-chain gas from receipts.
+ALTER TABLE ${S}.sponsor_health ADD COLUMN IF NOT EXISTS day_reserved_mist numeric;
+ALTER TABLE ${S}.sponsor_health ADD COLUMN IF NOT EXISTS day_admitted int;
+-- Faucet self-care. refill_state is 'idle' | 'ok' | 'rate-limited' | 'failing';
+-- alert on 'failing' or refill_hard_failures > 0, NOT on the blunt refusal
+-- counter — a healthy station sits throttled for hours at a time.
+ALTER TABLE ${S}.sponsor_health ADD COLUMN IF NOT EXISTS refill_state text;
+ALTER TABLE ${S}.sponsor_health ADD COLUMN IF NOT EXISTS refill_hard_failures int;
+ALTER TABLE ${S}.sponsor_health ADD COLUMN IF NOT EXISTS refill_last_hard_failure_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS ${S}.treasury_recon (
   ts                   timestamptz NOT NULL DEFAULT now(),
@@ -504,21 +521,33 @@ async function sponsorHealthJob() {
     row.error = String(e?.message ?? e).slice(0, 300);
   }
   const b = row.body ?? {};
+  // Prefer the honest field; fall back to the deprecated alias so this
+  // collector keeps working against a station older than the rename.
+  const reserved = b.limiter?.dayReservedMist ?? b.limiter?.daySpendMist ?? null;
+  const refill = b.selfCare?.refill ?? {};
   await pool.query(
     `INSERT INTO ${S}.sponsor_health
        (ts, ok, http_status, sponsor_address, balance_mist, low_balance, pool_reserved,
         day_spend_mist, daily_budget_mist, tracked_senders,
         approved, rejected, depleted, errors, station_started_at,
-        gas_budget_mist, low_balance_threshold_mist, error)
-     VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        gas_budget_mist, low_balance_threshold_mist, error,
+        day_reserved_mist, day_admitted,
+        refill_state, refill_hard_failures, refill_last_hard_failure_at)
+     VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+             $18, $19, $20, $21, $22)`,
     [
       row.ok, row.http_status, b.sponsorAddress ?? null, b.balanceMist ?? null,
       b.lowBalance ?? null, b.pool?.reserved ?? null,
-      b.limiter?.daySpendMist ?? null, b.limiter?.dailyBudgetMist ?? null,
+      // day_spend_mist keeps receiving the reservation so existing panels stay
+      // continuous across this upgrade; it is deprecated, not repurposed.
+      reserved, b.limiter?.dailyBudgetMist ?? null,
       b.limiter?.trackedSenders ?? null,
       b.stats?.approved ?? null, b.stats?.rejected ?? null, b.stats?.depleted ?? null,
       b.stats?.error ?? null, b.stats?.startedAt ?? null,
       b.config?.gasBudgetMist ?? null, b.config?.lowBalanceThresholdMist ?? null, row.error,
+      reserved, b.limiter?.dayAdmitted ?? null,
+      refill.state ?? null, refill.consecutiveHardFailures ?? null,
+      refill.lastHardFailureAt ?? null,
     ],
   );
   if (!row.ok) log('sponsor health: DOWN', { status: row.http_status, error: row.error });
