@@ -5,6 +5,29 @@ whole release train (Move source + SDK + services + tooling); only
 `@frontier-commerce/sdk` is published to npm. Versioning policy:
 [docs/distribution.md](docs/distribution.md).
 
+> **Correction affecting v0.1.3 and v0.1.4 (recorded 2026-07-28, same day).**
+> Those entries attribute the gRPC-Web failure to the JSON-RPC shutdown, i.e.
+> to a deliberate deprecation. **That was wrong.** The JSON-RPC removal is real
+> and permanent — `fullnode.testnet.sui.io` and `fullnode.mainnet.sui.io` now
+> answer JSON-RPC with 404. But **gRPC-Web was not deprecated**: it broke for
+> several hours and was **restored the same evening on testnet, devnet and
+> mainnet**. It is working normally as of this writing.
+>
+> The mistaken inference was reasonable at the time and is worth recording so
+> nobody repeats it: the gRPC-Web routes were answering with the *JSON-RPC
+> deprecation body*, and mainnet was still serving gRPC-Web, which together
+> looked exactly like a staged per-network rollout. It was more likely gRPC-Web
+> routing falling through to the JSON-RPC handler while that handler was being
+> removed — an outage, not a policy.
+>
+> **Read the v0.1.3/v0.1.4 advice accordingly.** "Mainnet operators should
+> expect the same flip" is withdrawn: there is no announced gRPC-Web
+> deprecation, and mainnet gRPC-Web works. The transport change itself still
+> stands on its own merits (fewer translation layers; native gRPC is the
+> surface Mysten treats as primary and the one that stayed up during the
+> incident) — but it is a robustness choice, **not** a migration you are forced
+> into. Anyone still on gRPC-Web is not on a deprecated path.
+
 ## v0.1.4 - 2026-07-28
 
 Completes v0.1.3. Same shape again: **Move source and SDK source are
