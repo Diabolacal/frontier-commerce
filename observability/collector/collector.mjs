@@ -48,9 +48,31 @@ import {
   getProductInfo,
 } from '@frontier-commerce/sdk';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { GrpcTransport } from '@protobuf-ts/grpc-transport';
+import { ChannelCredentials } from '@grpc/grpc-js';
 import pg from 'pg';
 
 const env = (k, d) => (process.env[k] !== undefined && process.env[k] !== '' ? process.env[k] : d);
+
+/**
+ * SUI_GRPC_URL -> `host:port` for @grpc/grpc-js, and the TLS decision.
+ *
+ * Deliberately duplicated from packages/gas-station/src/server.ts rather than
+ * shared: this collector is plain .mjs with no build step and cannot import
+ * that package's TypeScript source. Keep the two in step — the fail-safe rule
+ * is the load-bearing part: only an explicit http:// or grpc:// scheme selects
+ * plaintext, so a typo degrades to a refused connection rather than a silently
+ * unencrypted link to a public fullnode.
+ */
+const isPlaintextGrpcUrl = (raw) => /^(http|grpc):\/\//i.test(String(raw).trim());
+function grpcHostFromUrl(raw) {
+  const value = String(raw).trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    return /:\d+$/.test(value) ? value : `${value}:443`;
+  }
+  const url = new URL(value);
+  return `${url.hostname}:${url.port || (isPlaintextGrpcUrl(value) ? '80' : '443')}`;
+}
 
 const LEDGER_PATH = env('LEDGER_PATH', '/data/ledger.sqlite');
 const DEPLOYMENT_PATH = env('DEPLOYMENT_PATH', '/app/deployment.json');
@@ -106,7 +128,21 @@ if (MERCHANTS.length === 0) {
 }
 
 const ledger = openLedger(LEDGER_PATH);
-const grpc = new SuiGrpcClient({ baseUrl: SUI_GRPC_URL, network: deployment.network });
+// NATIVE gRPC over HTTP/2, not gRPC-web — SuiGrpcClient's default transport is
+// GrpcWebFetchTransport, and on 2026-07-28 the Sui testnet/devnet fullnodes
+// stopped serving gRPC-web as part of the JSON-RPC shutdown. Every registry and
+// merchant read failed with `unexpected response content type: application/json`
+// and the treasury reconciliation dashboard went to "no data". Same fix, and
+// same reason, as the gas station.
+const grpc = new SuiGrpcClient({
+  transport: new GrpcTransport({
+    host: grpcHostFromUrl(SUI_GRPC_URL),
+    channelCredentials: isPlaintextGrpcUrl(SUI_GRPC_URL)
+      ? ChannelCredentials.createInsecure()
+      : ChannelCredentials.createSsl(),
+  }),
+  network: deployment.network,
+});
 const pool = new pg.Pool({
   host: env('PGHOST', 'postgres'),
   port: Number(env('PGPORT', '5432')),
