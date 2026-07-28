@@ -276,14 +276,18 @@ export function buildDeps(
   //
   // NATIVE gRPC over HTTP/2, not gRPC-web. SuiGrpcClient's default transport is
   // GrpcWebFetchTransport, and on 2026-07-28 the Sui testnet/devnet fullnodes
-  // stopped serving gRPC-web as part of the JSON-RPC shutdown: the gRPC-web
-  // content type now falls through to the JSON-RPC handler, which answers
-  // `application/json` with a "JSON-RPC has been deprecated" body, so every
-  // call threw `unexpected response content type: application/json` and the
-  // sponsor went hard down. Native gRPC on the same host/path is unaffected
-  // (verified: getBalance/listCoins/getObjects all succeed), and mainnet still
-  // served gRPC-web at the time, so this is the shutdown rolling out per
-  // network rather than an endpoint outage. Node has no fetch-based native
+  // stopped serving gRPC-web for several hours: those routes fell through to
+  // the JSON-RPC handler, which answers `application/json` with a "JSON-RPC has
+  // been deprecated" body, so every call threw `unexpected response content
+  // type: application/json` and the sponsor went hard down. Native gRPC on the
+  // same host/path was unaffected throughout.
+  //
+  // NOTE, corrected after the fact: that was an OUTAGE, not a gRPC-web
+  // deprecation. gRPC-web was restored the same evening on testnet, devnet and
+  // mainnet. The JSON-RPC removal is the real, permanent change; gRPC-web
+  // breaking alongside it was collateral from that rollout. So this transport
+  // is a robustness choice — fewer translation layers, and the surface Mysten
+  // treats as primary — not a forced migration. Node has no fetch-based native
   // gRPC, hence @grpc/grpc-js via @protobuf-ts/grpc-transport.
   const network = env.SUI_NETWORK ?? 'testnet';
   const rpcUrl = env.SUI_RPC_URL ?? 'https://fullnode.testnet.sui.io:443';

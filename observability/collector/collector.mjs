@@ -130,10 +130,14 @@ if (MERCHANTS.length === 0) {
 const ledger = openLedger(LEDGER_PATH);
 // NATIVE gRPC over HTTP/2, not gRPC-web — SuiGrpcClient's default transport is
 // GrpcWebFetchTransport, and on 2026-07-28 the Sui testnet/devnet fullnodes
-// stopped serving gRPC-web as part of the JSON-RPC shutdown. Every registry and
-// merchant read failed with `unexpected response content type: application/json`
-// and the treasury reconciliation dashboard went to "no data". Same fix, and
-// same reason, as the gas station.
+// stopped serving gRPC-web for several hours. Every registry and merchant read
+// failed with `unexpected response content type: application/json` and the
+// treasury reconciliation dashboard went to "no data". Same fix, and same
+// reason, as the gas station.
+//
+// NOTE, corrected after the fact: that was an OUTAGE, not a gRPC-web
+// deprecation — gRPC-web was restored the same evening on all networks. Native
+// gRPC is kept as the more robust surface, not because gRPC-web is going away.
 const grpc = new SuiGrpcClient({
   transport: new GrpcTransport({
     host: grpcHostFromUrl(SUI_GRPC_URL),
