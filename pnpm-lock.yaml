@@ -38,9 +38,15 @@ importers:
       '@frontier-commerce/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      '@grpc/grpc-js':
+        specifier: ^1.12.5
+        version: 1.14.4
       '@mysten/sui':
         specifier: ^2.22.0
         version: 2.22.0(typescript@5.9.3)
+      '@protobuf-ts/grpc-transport':
+        specifier: ^2.11.1
+        version: 2.11.1(@grpc/grpc-js@1.14.4)
       pg:
         specifier: ^8.13.1
         version: 8.22.0
