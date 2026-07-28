@@ -20,7 +20,9 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@mysten/sui": "^2.22.0"
+    "@grpc/grpc-js": "^1.12.5",
+    "@mysten/sui": "^2.22.0",
+    "@protobuf-ts/grpc-transport": "^2.11.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

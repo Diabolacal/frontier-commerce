@@ -27,6 +27,8 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
+import { GrpcTransport } from '@protobuf-ts/grpc-transport';
+import { ChannelCredentials } from '@grpc/grpc-js';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { GasPool } from './gasPool.js';
@@ -229,6 +231,32 @@ function suiToMist(raw: string | undefined, fallbackSui: number): bigint {
   return BigInt(Math.round((Number.isFinite(n) ? n : fallbackSui) * 1e9));
 }
 
+/** true for an explicitly plaintext gRPC endpoint (http:// or grpc://, e.g. a
+ *  sidecar or local node). Anything else — including a bare host:port — is
+ *  treated as TLS, so a typo degrades to "refuses to connect", never to a
+ *  silently unencrypted link to a public fullnode. */
+export function isPlaintextGrpcUrl(raw: string): boolean {
+  return /^(http|grpc):\/\//i.test(raw.trim());
+}
+
+/**
+ * GrpcTransport wants `host:port`, not a URL. Accepts the same SUI_RPC_URL
+ * values the gRPC-web transport did (`https://fullnode.testnet.sui.io:443`,
+ * `https://fullnode.testnet.sui.io`) plus a bare `host:port`. Defaults to 443
+ * for TLS and 80 for plaintext when no port is given, since gRPC needs an
+ * explicit one.
+ */
+export function grpcHostFromUrl(raw: string): string {
+  const value = raw.trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    // Bare authority: keep as-is when it already carries a port.
+    return /:\d+$/.test(value) ? value : `${value}:443`;
+  }
+  const url = new URL(value);
+  const port = url.port || (isPlaintextGrpcUrl(value) ? '80' : '443');
+  return `${url.hostname}:${port}`;
+}
+
 export function buildDeps(
   env: ServerEnv,
 ): SponsorDeps & { limiter: RateLimiter; ipLimiter: RateLimiter; selfCare: TestnetSelfCare } {
@@ -241,13 +269,31 @@ export function buildDeps(
   const { secretKey } = decodeSuiPrivateKey(env.SPONSOR_PRIVATE_KEY);
   const keypair = Ed25519Keypair.fromSecretKey(secretKey);
   const sponsorAddress = keypair.getPublicKey().toSuiAddress();
-  // gRPC(-web) fullnode endpoint. JSON-RPC was removed from Sui nodes at
-  // protocol level (2026-07-31); SUI_RPC_URL must be a gRPC endpoint such as
+  // gRPC fullnode endpoint. JSON-RPC was removed from Sui nodes at protocol
+  // level (2026-07-31); SUI_RPC_URL must be a gRPC endpoint such as
   // https://fullnode.testnet.sui.io:443. Every downstream call already goes
   // through client.core.* (ClientWithCoreApi), so only construction changes.
+  //
+  // NATIVE gRPC over HTTP/2, not gRPC-web. SuiGrpcClient's default transport is
+  // GrpcWebFetchTransport, and on 2026-07-28 the Sui testnet/devnet fullnodes
+  // stopped serving gRPC-web as part of the JSON-RPC shutdown: the gRPC-web
+  // content type now falls through to the JSON-RPC handler, which answers
+  // `application/json` with a "JSON-RPC has been deprecated" body, so every
+  // call threw `unexpected response content type: application/json` and the
+  // sponsor went hard down. Native gRPC on the same host/path is unaffected
+  // (verified: getBalance/listCoins/getObjects all succeed), and mainnet still
+  // served gRPC-web at the time, so this is the shutdown rolling out per
+  // network rather than an endpoint outage. Node has no fetch-based native
+  // gRPC, hence @grpc/grpc-js via @protobuf-ts/grpc-transport.
   const network = env.SUI_NETWORK ?? 'testnet';
+  const rpcUrl = env.SUI_RPC_URL ?? 'https://fullnode.testnet.sui.io:443';
   const client = new SuiGrpcClient({
-    baseUrl: env.SUI_RPC_URL ?? 'https://fullnode.testnet.sui.io:443',
+    transport: new GrpcTransport({
+      host: grpcHostFromUrl(rpcUrl),
+      channelCredentials: isPlaintextGrpcUrl(rpcUrl)
+        ? ChannelCredentials.createInsecure()
+        : ChannelCredentials.createSsl(),
+    }),
     network: network as 'testnet' | 'devnet' | 'localnet',
   });
   const gasBudgetMist = BigInt(env.GAS_BUDGET_MIST ?? '50000000'); // 0.05 SUI
