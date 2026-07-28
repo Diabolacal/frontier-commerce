@@ -5,6 +5,57 @@ whole release train (Move source + SDK + services + tooling); only
 `@frontier-commerce/sdk` is published to npm. Versioning policy:
 [docs/distribution.md](docs/distribution.md).
 
+## v0.1.3 - 2026-07-28
+
+Same shape as v0.1.2: **Move source and SDK source are byte-identical to
+v0.1.0**, so the SDK republishes at 0.1.3 unchanged and no on-chain package
+upgrade is implied. Patch, not minor: the Move/SDK pair the versioning policy
+ties minors to is untouched.
+
+Tagged urgently. The gas station is consumed by cloning at a release tag (see
+[docs/distribution.md](docs/distribution.md)), and until this ships, **every
+gas station on testnet or devnet is hard down** with no recovery available
+from configuration alone.
+
+**Operator action required if you run a gas station:** upgrade. There is no
+env-var workaround.
+
+- **Gas station: native gRPC instead of gRPC-web.** On 2026-07-28 the Sui
+  testnet and devnet fullnodes stopped serving **gRPC-web** as part of the
+  scheduled JSON-RPC shutdown. The gRPC-web content type now falls through to
+  the JSON-RPC handler, which answers `application/json` with a "JSON-RPC has
+  been deprecated" body, so `SuiGrpcClient`'s default `GrpcWebFetchTransport`
+  threw `unexpected response content type: application/json` on **every** call:
+  `/health` 500, no sponsorships, and a wallet that still looks perfectly
+  healthy while the dashboard shows the station down.
+
+  Same host, same path, same HTTP/2 connection: `application/grpc` is answered
+  with `application/grpc`, `application/grpc-web+proto` with
+  `application/json`. `fullnode.mainnet.sui.io` still served gRPC-web at the
+  time of writing, so this is the shutdown rolling out per network rather than
+  an endpoint outage — **mainnet operators should expect the same flip and
+  upgrade before it lands.**
+
+  The station now injects a native gRPC transport (`@grpc/grpc-js` via
+  `@protobuf-ts/grpc-transport`, since Node has no fetch-based native gRPC)
+  through the `transport` option `SuiGrpcClient` already exposes. Nothing
+  downstream changes; every call still goes through `client.core.*`. Verified
+  against `fullnode.testnet.sui.io` before shipping: `getBalance`, `listCoins`
+  and `getObjects` all succeed on native gRPC and all fail on gRPC-web.
+
+  Note for anyone diagnosing this from scratch: neither an SDK bump nor
+  `SUI_RPC_URL` fixes it. `@mysten/sui@2.22.1` predates the change, and of six
+  testnet endpoints probed only one still spoke gRPC-web — not a trade worth
+  making for a gas-signing service.
+
+- **`SUI_RPC_URL` keeps its meaning.** `@grpc/grpc-js` wants `host:port`
+  rather than a URL, so the value is parsed: existing settings
+  (`https://fullnode.testnet.sui.io:443`) work unchanged, a missing port
+  defaults to 443 (80 for plaintext), and a bare `host` or `host:port` is
+  accepted. Only an explicit `http://` or `grpc://` scheme selects plaintext
+  credentials — a bare host stays TLS, so a typo degrades to a refused
+  connection rather than a silently unencrypted link to a public fullnode.
+
 ## v0.1.2 - 2026-07-27
 
 Operated-services release, same shape as v0.1.1: **Move source and SDK source

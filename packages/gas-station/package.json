@@ -1,6 +1,6 @@
 {
   "name": "@frontier-commerce/gas-station",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "license": "Apache-2.0",
   "description": "Sponsorship (gas station) service: validates TransactionKinds against an allowlist policy, attaches sponsor gas from a reserved coin pool, co-signs",
