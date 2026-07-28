@@ -1,6 +1,6 @@
 {
   "name": "@frontier-commerce/sdk",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "license": "Apache-2.0",
   "description": "TypeScript SDK for the Frontier Commerce Move package: deployment config, transaction builders, queries, events, gas-sponsorship client",
   "keywords": [

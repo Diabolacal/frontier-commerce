@@ -5,6 +5,34 @@ whole release train (Move source + SDK + services + tooling); only
 `@frontier-commerce/sdk` is published to npm. Versioning policy:
 [docs/distribution.md](docs/distribution.md).
 
+## v0.1.4 - 2026-07-28
+
+Completes v0.1.3. Same shape again: **Move source and SDK source are
+byte-identical to v0.1.0**, so the SDK republishes at 0.1.4 unchanged and no
+on-chain package upgrade is implied.
+
+**Operator action required if you run the observability collector:** upgrade.
+v0.1.3 fixed the gas station but missed this, so a station operator who
+upgraded still had a treasury reconciliation dashboard stuck on "no data".
+
+- **Collector: native gRPC instead of gRPC-web.** The collector constructs its
+  own `SuiGrpcClient`, which also defaulted to `GrpcWebFetchTransport`. When
+  the Sui testnet and devnet fullnodes stopped serving gRPC-web (see v0.1.3),
+  every registry and merchant read failed with `unexpected response content
+  type: application/json` and treasury reconciliation went dark at the same
+  moment the sponsor went down.
+
+  The `SUI_GRPC_URL` parsing is duplicated from the gas station rather than
+  shared: the collector is plain `.mjs` with no build step and cannot import
+  that package's TypeScript source. Both copies carry a comment saying so. The
+  fail-safe rule is preserved — only an explicit `http://` or `grpc://` scheme
+  selects plaintext credentials.
+
+  **Process note for anyone hitting a transport-level break like this:** fix it
+  by sweeping the repo for every `SuiGrpcClient` construction, not just the
+  service that is visibly down. v0.1.3 shipped from the symptom rather than the
+  pattern, and needed this follow-up hours later.
+
 ## v0.1.3 - 2026-07-28
 
 Same shape as v0.1.2: **Move source and SDK source are byte-identical to
