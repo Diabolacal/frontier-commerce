@@ -94,3 +94,7 @@ Cross-cutting facts:
   and CivilizationControl. A v1 rewrite is in progress on its `dev` branch (modular
   core/character/inventory packages replacing the v0 monolith, MVR deploys, new access control) —
   expect breaking changes for every chain consumer when it ships.
+
+## Closeout
+
+End every task with: repo, branch, starting commit, final commit, pushed (yes/no), production deploy (yes/no), preview deploy (yes/no) + preview URL if relevant, files changed, validation run, known gaps, and preserved unrelated dirt + final `git status`.
