@@ -6,6 +6,27 @@ development period (2026-07-19 → 2026-07-24) that a builder needs to
 understand the system. The authors' deployment-operations history lives in
 their private operations repo.
 
+## 2026-08-03 - Claude Code loads CLAUDE.md, so CLAUDE.md imports AGENTS.md
+
+- **Problem:** `CLAUDE.md` opened by *telling* the agent to read `AGENTS.md` and
+  `.github/copilot-instructions.md`, then restated five non-negotiables in case the
+  agent never did. Claude Code only ever loads `CLAUDE.md`; nothing else in the
+  repo reaches the model automatically, so the rules were duplicated in the one
+  file that loads and merely referenced in the two files that are canonical.
+- **Decision:** first line of `CLAUDE.md` is now `@AGENTS.md`, which imports that
+  file in full at launch (the documented import mechanism, preferred over symlinks
+  on Windows). The duplicated bullets are gone; what remains below the import is
+  only what is true of Claude Code specifically - that the canonical
+  `.github/copilot-instructions.md` and the scoped `.github/instructions/*` files
+  are *not* auto-loaded and must be read, and that `.claude/` is gitignored here.
+- Added a `## Closeout` section to `AGENTS.md` so every task ends with the same
+  report shape (repo, branch, commits, push/deploy state, files, validation, gaps,
+  preserved dirt).
+- Local-only: `.claude/settings.json` denies `git reset --hard`, `git clean` and
+  force-push under both `Bash(...)` and `PowerShell(...)` matchers - PowerShell
+  invocations are not covered by `Bash(...)` rules. It is gitignored, so it does
+  not ship to contributors; the same prohibitions remain written in AGENTS.md.
+
 ## 2026-07-26 - Observability is multi-merchant; revenue attribution by product and app
 
 - **Problem (found on the authors' live testnet deployment the day a second

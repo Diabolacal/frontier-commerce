@@ -63,3 +63,7 @@ file wins. Scoped rules: [`.github/instructions/move.instructions.md`](.github/i
 - Register MVR names/PackageInfo objects or publish npm packages outside
   the release workflow — the MVR no-registration posture is deliberate
   (`docs/distribution.md`).
+
+## Closeout
+
+End every task with: repo, branch, starting commit, final commit, pushed (yes/no), production deploy (yes/no), preview deploy (yes/no) + preview URL if relevant, files changed, validation run, known gaps, and preserved unrelated dirt + final `git status`.
